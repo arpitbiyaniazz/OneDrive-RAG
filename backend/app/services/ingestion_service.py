@@ -11,12 +11,14 @@ from app.db.database import AsyncSessionLocal
 from app.models.document import Document
 from app.models.chunk import DocumentChunk
 from app.models.ingestion_job import IngestionJob
+from app.models.user import OAuthAccount
 from app.processors.factory import DocumentParserFactory
 from app.services.chunker import StructureAwareChunker
 from app.services.embedding_service import get_embedding_provider
-from app.services.microsoft_graph import get_onedrive_service, mock_onedrive_provider
-from app.services.google_drive import get_google_drive_service, mock_google_drive_provider
+from app.services.microsoft_graph import graph_service, mock_onedrive_provider
+from app.services.google_drive import google_drive_service, mock_google_drive_provider, GoogleDriveService
 from app.core.config import settings
+from app.core.security import decrypt_token, encrypt_token
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +52,6 @@ class IngestionService:
         and saves documents and pgvector chunks into the database.
         """
         logger.info(f"Starting ingestion job {job_id} for user {user_id} ({len(item_ids)} files)")
-        service = get_onedrive_service()
 
         async with AsyncSessionLocal() as session:
             # Set job status to PROCESSING
@@ -61,32 +62,122 @@ class IngestionService:
             job.status = "PROCESSING"
             await session.commit()
 
+        # Resolve user's OAuth tokens
+        google_token = None
+        microsoft_token = None
+        async with AsyncSessionLocal() as session:
+            stmt = select(OAuthAccount).where(OAuthAccount.user_id == user_id)
+            res = await session.execute(stmt)
+            accounts = res.scalars().all()
+            for acc in accounts:
+                if acc.provider == "google":
+                    g_tok = decrypt_token(acc.encrypted_access_token)
+                    google_token = g_tok
+                    if acc.encrypted_refresh_token:
+                        try:
+                            r_tok = decrypt_token(acc.encrypted_refresh_token)
+                            new_t = await google_drive_service.refresh_access_token(r_tok)
+                            google_token = new_t.get("access_token", g_tok)
+                            acc.encrypted_access_token = encrypt_token(google_token)
+                            if new_t.get("refresh_token"):
+                                acc.encrypted_refresh_token = encrypt_token(new_t["refresh_token"])
+                            await session.commit()
+                        except Exception as re:
+                            logger.warning(f"Could not refresh Google token during ingestion: {re}")
+                elif acc.provider == "microsoft":
+                    ms_tok = decrypt_token(acc.encrypted_access_token)
+                    microsoft_token = ms_tok
+                    if acc.encrypted_refresh_token:
+                        try:
+                            r_tok = decrypt_token(acc.encrypted_refresh_token)
+                            new_t = await graph_service.refresh_access_token(r_tok)
+                            microsoft_token = new_t.get("access_token", ms_tok)
+                            acc.encrypted_access_token = encrypt_token(microsoft_token)
+                            if new_t.get("refresh_token"):
+                                acc.encrypted_refresh_token = encrypt_token(new_t["refresh_token"])
+                            await session.commit()
+                        except Exception as re:
+                            logger.warning(f"Could not refresh Microsoft token during ingestion: {re}")
+
         processed_count = 0
         failed_count = 0
         total_chunks_created = 0
 
         for item_id in item_ids:
             try:
-                # 1. Fetch item metadata & file bytes
+                # 1. Fetch item metadata & file bytes from mock or real provider
                 item_meta = None
-                is_gdrive = item_id.startswith("gdrive_") or item_id.startswith("file_gdrive_")
+                file_bytes = None
+                is_gdrive = False
 
-                if is_gdrive:
-                    gdrive_service = get_google_drive_service()
-                    if settings.DEV_MOCK_GDRIVE:
-                        item_meta = await mock_google_drive_provider.get_item_by_id(item_id)
-                        file_bytes = await mock_google_drive_provider.download_file_bytes(
-                            item_id, item_meta.get("mime_type", "") if item_meta else ""
-                        )
-                    else:
-                        item_meta = await gdrive_service.get_file_metadata("", item_id)
-                        file_bytes = await gdrive_service.download_file_bytes("", item_id, item_meta.get("mimeType", ""))
-                else:
-                    if settings.DEV_MOCK_ONEDRIVE:
-                        item_meta = await mock_onedrive_provider.get_item_by_id(item_id)
+                # Check mock google drive provider first
+                mock_g = await mock_google_drive_provider.get_item_by_id(item_id)
+                if mock_g:
+                    item_meta = mock_g
+                    file_bytes = await mock_google_drive_provider.download_file_bytes(
+                        item_id, item_meta.get("mime_type", "")
+                    )
+                    is_gdrive = True
+
+                # Check mock onedrive provider
+                if not file_bytes:
+                    mock_ms = await mock_onedrive_provider.get_item_by_id(item_id)
+                    if mock_ms:
+                        item_meta = mock_ms
                         file_bytes = await mock_onedrive_provider.download_file_bytes(item_id)
-                    else:
-                        file_bytes = await service.download_file_bytes("", item_id)
+                        is_gdrive = False
+
+                # Try real Google Drive
+                if not file_bytes and google_token:
+                    try:
+                        g_meta = await google_drive_service.get_file_metadata(google_token, item_id)
+                        if g_meta and "name" in g_meta:
+                            original_mime = g_meta.get("mimeType", "")
+                            file_name = g_meta["name"]
+
+                            # If it's a Google Workspace file, adjust name/mime for the exported format
+                            export_info = GoogleDriveService.get_export_info(original_mime)
+                            if export_info:
+                                export_mime, export_ext = export_info
+                                # Strip any .gdoc / .gsheet / .gslides pseudo-extension
+                                base = file_name.rsplit(".", 1)[0] if "." in file_name else file_name
+                                file_name = f"{base}{export_ext}"
+                                original_mime = export_mime
+
+                            item_meta = {
+                                "id": g_meta["id"],
+                                "name": file_name,
+                                "mime_type": original_mime,
+                                "size": int(g_meta.get("size", 0)),
+                                "path": f"/{file_name}",
+                                "web_url": g_meta.get("webViewLink", ""),
+                                "modified_date": g_meta.get("modifiedTime"),
+                                "drive_type": "google_drive",
+                            }
+                            # Use resolved file ID (may differ from original if shortcut was resolved)
+                            resolved_id = g_meta["id"]
+                            file_bytes = await google_drive_service.download_file_bytes(
+                                google_token, resolved_id, g_meta.get("mimeType", "")
+                            )
+                            is_gdrive = True
+                    except Exception as ge:
+                        logger.warning(f"Item {item_id} not fetched via Google Drive: {ge}")
+
+                # Try real OneDrive
+                if not file_bytes and microsoft_token:
+                    try:
+                        ms_meta = await graph_service.get_file_metadata(microsoft_token, item_id)
+                        if ms_meta and "name" in ms_meta:
+                            item_meta = ms_meta
+                            file_bytes = await graph_service.download_file_bytes(microsoft_token, item_id)
+                            is_gdrive = False
+                    except Exception as me:
+                        logger.warning(f"Item {item_id} not fetched via OneDrive: {me}")
+
+                if not file_bytes:
+                    logger.error(f"Could not download file content for item {item_id}")
+                    failed_count += 1
+                    continue
 
                 if not item_meta:
                     item_meta = {

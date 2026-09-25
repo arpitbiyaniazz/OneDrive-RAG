@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { RefreshCw, CheckCircle2, AlertCircle, Database, X } from 'lucide-react';
 import { IngestionJob } from '../../types';
+import { getAuthHeaders } from '../../services/api';
 
 interface IngestionModalProps {
   jobId: string;
@@ -15,7 +16,7 @@ export function IngestionModal({ jobId, onClose, onComplete }: IngestionModalPro
     let interval: any;
     async function poll() {
       try {
-        const res = await fetch(`/api/ingestion/${jobId}`);
+        const res = await fetch(`/api/ingestion/${jobId}`, { headers: getAuthHeaders() });
         if (res.ok) {
           const data = await res.json();
           setJob(data);

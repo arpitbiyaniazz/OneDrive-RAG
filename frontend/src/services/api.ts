@@ -83,12 +83,25 @@ export async function exchangeGoogleAuthCode(code: string, state?: string): Prom
   return data;
 }
 
-export async function fetchGoogleDriveTree(): Promise<{ items: OneDriveItem[] }> {
+export function getAuthHeaders(customHeaders: Record<string, string> = {}): Record<string, string> {
   const token = localStorage.getItem('onedrive_rag_token');
-  const headers: Record<string, string> = {};
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const headers: Record<string, string> = { ...customHeaders };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
+}
 
-  const res = await fetch(`${API_BASE}/gdrive/tree`, { headers });
+export async function fetchOneDriveTree(): Promise<{ items: OneDriveItem[] }> {
+  const res = await fetch(`${API_BASE}/onedrive/tree`, { headers: getAuthHeaders() });
+  if (!res.ok) {
+    throw new Error('Failed to load OneDrive hierarchy');
+  }
+  return res.json();
+}
+
+export async function fetchGoogleDriveTree(): Promise<{ items: OneDriveItem[] }> {
+  const res = await fetch(`${API_BASE}/gdrive/tree`, { headers: getAuthHeaders() });
   if (!res.ok) {
     throw new Error('Failed to load Google Drive hierarchy');
   }
@@ -96,13 +109,70 @@ export async function fetchGoogleDriveTree(): Promise<{ items: OneDriveItem[] }>
 }
 
 export async function fetchGoogleDriveFolderItems(folderId: string): Promise<{ items: OneDriveItem[] }> {
-  const token = localStorage.getItem('onedrive_rag_token');
-  const headers: Record<string, string> = {};
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-
-  const res = await fetch(`${API_BASE}/gdrive/folders/${folderId}/items`, { headers });
+  const res = await fetch(`${API_BASE}/gdrive/folders/${folderId}/items`, { headers: getAuthHeaders() });
   if (!res.ok) {
     throw new Error('Failed to load Google Drive folder items');
+  }
+  return res.json();
+}
+
+export async function fetchOneDriveFolderItems(folderId: string): Promise<{ items: OneDriveItem[] }> {
+  const res = await fetch(`${API_BASE}/onedrive/folders/${folderId}/items`, { headers: getAuthHeaders() });
+  if (!res.ok) {
+    throw new Error('Failed to load OneDrive folder items');
+  }
+  return res.json();
+}
+
+export async function startIngestion(
+  itemIds: string[],
+  items?: OneDriveItem[],
+  folderPath: string = '/Company'
+): Promise<{ job_id: string; total_files: number; message: string }> {
+  const payload = {
+    item_ids: itemIds,
+    items: items?.map((it) => ({
+      id: it.id,
+      name: it.name,
+      drive_type: it.drive_type || 'onedrive',
+      mime_type: it.mime_type,
+    })),
+    folder_path: folderPath,
+  };
+  const res = await fetch(`${API_BASE}/ingestion/start`, {
+    method: 'POST',
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Failed to start ingestion' }));
+    throw new Error(err.detail || 'Ingestion failed');
+  }
+  return res.json();
+}
+
+export async function fetchDocuments(filters?: {
+  folder_path?: string;
+  file_type?: string;
+  drive_type?: string;
+}) {
+  const params = new URLSearchParams();
+  if (filters?.folder_path) params.set('folder_path', filters.folder_path);
+  if (filters?.file_type && filters.file_type !== 'all') params.set('file_type', filters.file_type);
+  if (filters?.drive_type && filters.drive_type !== 'all') params.set('drive_type', filters.drive_type);
+
+  const query = params.toString() ? `?${params.toString()}` : '';
+  const res = await fetch(`${API_BASE}/documents${query}`, { headers: getAuthHeaders() });
+  if (!res.ok) {
+    throw new Error('Failed to fetch documents');
+  }
+  return res.json();
+}
+
+export async function fetchKnowledgeBaseStats() {
+  const res = await fetch(`${API_BASE}/documents/stats`, { headers: getAuthHeaders() });
+  if (!res.ok) {
+    throw new Error('Failed to fetch stats');
   }
   return res.json();
 }
@@ -110,7 +180,7 @@ export async function fetchGoogleDriveFolderItems(folderId: string): Promise<{ i
 export async function logoutUser(): Promise<void> {
   localStorage.removeItem('onedrive_rag_token');
   localStorage.removeItem('onedrive_rag_demo_session');
-  await fetch(`${API_BASE}/auth/logout`, { method: 'POST' }).catch(() => {});
+  await fetch(`${API_BASE}/auth/logout`, { method: 'POST', headers: getAuthHeaders() }).catch(() => {});
 }
 
 

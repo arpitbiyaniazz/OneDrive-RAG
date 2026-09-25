@@ -19,6 +19,7 @@ import {
   logoutUser,
   exchangeAuthCode,
   exchangeGoogleAuthCode,
+  startIngestion,
 } from './services/api';
 import { ChatBox } from './components/Chat/ChatBox';
 import { FolderTree } from './components/OneDrive/FolderTree';
@@ -128,17 +129,10 @@ export function App() {
     }
   }
 
-  async function handleIndexSelection(selectedIds: string[], _items: OneDriveItem[]) {
+  async function handleIndexSelection(selectedIds: string[], items: OneDriveItem[]) {
     try {
-      const res = await fetch('/api/ingestion/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ item_ids: selectedIds, folder_path: '/Company' }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setActiveJobId(data.job_id);
-      }
+      const data = await startIngestion(selectedIds, items, '/Company');
+      setActiveJobId(data.job_id);
     } catch (e) {
       console.error('Failed to trigger ingestion', e);
     }

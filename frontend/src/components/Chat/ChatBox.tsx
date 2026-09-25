@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { ChatMessage, Citation } from '../../types';
+import { getAuthHeaders } from '../../services/api';
 
 interface ChatBoxProps {
   sessionId: string | null;
@@ -102,7 +103,7 @@ export function ChatBox({
     try {
       const response = await fetch('/api/chat/stream', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ query: q, session_id: sessionId }),
         signal: controller.signal,
       });
@@ -203,7 +204,7 @@ export function ChatBox({
     try {
       await fetch('/api/chat/feedback', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ message_id: messageId, trace_id: traceId, feedback: score }),
       });
       setFeedbackSent((prev) => ({ ...prev, [messageId]: score }));

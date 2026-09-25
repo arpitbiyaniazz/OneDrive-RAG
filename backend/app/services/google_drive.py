@@ -118,52 +118,104 @@ class GoogleDriveService:
                     })
                 return formatted
 
+    # MIME types that cannot be downloaded or exported
+    NON_DOWNLOADABLE_TYPES = {
+        "application/vnd.google-apps.folder",
+        "application/vnd.google-apps.shortcut",
+        "application/vnd.google-apps.map",
+        "application/vnd.google-apps.site",
+    }
+
     async def get_file_metadata(self, access_token: str, file_id: str) -> Dict[str, Any]:
-        """Retrieves metadata for a specific Google Drive file."""
+        """Retrieves metadata for a specific Google Drive file. Resolves shortcuts to target files."""
         with trace_gdrive_call("get_file_metadata", f"/files/{file_id}"):
             headers = {"Authorization": f"Bearer {access_token}"}
             params = {
-                "fields": "id, name, mimeType, size, createdTime, modifiedTime, webViewLink, parents"
+                "fields": "id, name, mimeType, size, createdTime, modifiedTime, webViewLink, parents, shortcutDetails"
             }
             async with httpx.AsyncClient() as client:
                 res = await client.get(f"{GOOGLE_DRIVE_API_BASE}/files/{file_id}", headers=headers, params=params)
                 if res.status_code != 200:
                     raise ValueError(f"Failed to get Google Drive file metadata: {res.text}")
-                return res.json()
+                meta = res.json()
+
+                # If this is a shortcut, resolve to the target file
+                if meta.get("mimeType") == "application/vnd.google-apps.shortcut":
+                    shortcut_details = meta.get("shortcutDetails", {})
+                    target_id = shortcut_details.get("targetId")
+                    target_mime = shortcut_details.get("targetMimeType", "")
+                    if target_id:
+                        logger.info(f"Resolving Google Drive shortcut {file_id} -> target {target_id} ({target_mime})")
+                        # Recursively get the real file metadata
+                        return await self.get_file_metadata(access_token, target_id)
+                    else:
+                        raise ValueError(f"Shortcut {file_id} has no targetId — cannot resolve")
+
+                return meta
+
+    # Mapping of Google Workspace MIME types to export formats
+    GOOGLE_WORKSPACE_EXPORT_MAP = {
+        "application/vnd.google-apps.document": (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".docx",
+        ),
+        "application/vnd.google-apps.spreadsheet": (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".xlsx",
+        ),
+        "application/vnd.google-apps.presentation": (
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ".pptx",
+        ),
+        "application/vnd.google-apps.drawing": ("application/pdf", ".pdf"),
+        "application/vnd.google-apps.form": ("application/pdf", ".pdf"),
+        "application/vnd.google-apps.jam": ("application/pdf", ".pdf"),
+        "application/vnd.google-apps.script": ("application/vnd.google-apps.script+json", ".json"),
+    }
+
+    @classmethod
+    def get_export_info(cls, mime_type: str):
+        """Returns (export_mime_type, extension) for Google Workspace types, or None for binary files."""
+        # Non-downloadable types cannot be exported
+        if mime_type in cls.NON_DOWNLOADABLE_TYPES:
+            return None
+        if mime_type in cls.GOOGLE_WORKSPACE_EXPORT_MAP:
+            return cls.GOOGLE_WORKSPACE_EXPORT_MAP[mime_type]
+        # Catch-all: any other vnd.google-apps.* type → export as PDF
+        if mime_type.startswith("application/vnd.google-apps."):
+            return ("application/pdf", ".pdf")
+        return None
 
     async def download_file_bytes(self, access_token: str, file_id: str, mime_type: str = "") -> bytes:
         """
-        Downloads binary content of a file or exports Google Workspace native documents
-        (Docs -> DOCX, Sheets -> XLSX, Slides -> PPTX).
+        Downloads binary content of a file or exports Google Workspace native documents.
+        Docs -> DOCX, Sheets -> XLSX, Slides -> PPTX, others -> PDF.
+        Falls back to PDF export if primary format fails.
         """
         with trace_gdrive_call("download_file_bytes", f"/files/{file_id}/download"):
             headers = {"Authorization": f"Bearer {access_token}"}
             async with httpx.AsyncClient(timeout=60.0) as client:
-                # Handle Google Workspace Native Docs
-                if mime_type == "application/vnd.google-apps.document":
-                    # Export Google Doc as DOCX
+                export_info = self.get_export_info(mime_type)
+                if export_info:
+                    export_mime, _ = export_info
                     export_url = f"{GOOGLE_DRIVE_API_BASE}/files/{file_id}/export"
+                    logger.info(f"Exporting Google Workspace file {file_id} as {export_mime}")
                     res = await client.get(
                         export_url,
                         headers=headers,
-                        params={"mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+                        params={"mimeType": export_mime},
                     )
-                elif mime_type == "application/vnd.google-apps.spreadsheet":
-                    # Export Google Sheet as XLSX
-                    export_url = f"{GOOGLE_DRIVE_API_BASE}/files/{file_id}/export"
-                    res = await client.get(
-                        export_url,
-                        headers=headers,
-                        params={"mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
-                    )
-                elif mime_type == "application/vnd.google-apps.presentation":
-                    # Export Google Slide as PPTX
-                    export_url = f"{GOOGLE_DRIVE_API_BASE}/files/{file_id}/export"
-                    res = await client.get(
-                        export_url,
-                        headers=headers,
-                        params={"mimeType": "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
-                    )
+
+                    # If primary export format fails, fallback to PDF
+                    if res.status_code != 200 and export_mime != "application/pdf":
+                        logger.warning(
+                            f"Primary export ({export_mime}) failed for {file_id}: {res.status_code}. Falling back to PDF."
+                        )
+                        res = await client.get(
+                            export_url,
+                            headers=headers,
+                            params={"mimeType": "application/pdf"},
+                        )
                 else:
                     # Standard binary or text download
                     download_url = f"{GOOGLE_DRIVE_API_BASE}/files/{file_id}"

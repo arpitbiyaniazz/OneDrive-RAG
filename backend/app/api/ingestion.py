@@ -19,6 +19,8 @@ router = APIRouter(prefix="", tags=["Document Ingestion & Catalog"])
 class IngestRequest(BaseModel):
     item_ids: List[str]
     folder_path: Optional[str] = "/"
+    items: Optional[List[dict]] = None
+    drive_type: Optional[str] = None
 
 
 @router.post("/ingestion/start")
@@ -28,10 +30,10 @@ async def start_ingestion(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Initiates asynchronous ingestion for selected OneDrive files.
+    Initiates asynchronous ingestion for selected OneDrive or Google Drive files.
     """
     if not req.item_ids:
-        raise HTTPException(status_code=400, detail="No OneDrive items selected for ingestion.")
+        raise HTTPException(status_code=400, detail="No items selected for ingestion.")
 
     job = await ingestion_service.create_job(
         user_id=current_user.id,
@@ -93,6 +95,7 @@ async def list_documents(
     folder_path: Optional[str] = Query(None),
     file_type: Optional[str] = Query(None),
     drive_type: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -100,6 +103,11 @@ async def list_documents(
     Lists all indexed documents for the authenticated user with optional folder, type, or drive_type filters.
     """
     stmt = select(Document).where(Document.user_id == current_user.id)
+    if status:
+        stmt = stmt.where(Document.status == status)
+    else:
+        stmt = stmt.where(Document.status != "DELETED")
+
     if folder_path:
         stmt = stmt.where(Document.folder_path.ilike(f"{folder_path}%"))
     if file_type:
@@ -139,8 +147,11 @@ async def get_knowledge_base_stats(
     """
     Returns high-level statistics for the user's Knowledge Base dashboard.
     """
-    # Count total documents
-    doc_stmt = select(func.count(Document.id)).where(Document.user_id == current_user.id)
+    # Count total active documents
+    doc_stmt = select(func.count(Document.id)).where(
+        Document.user_id == current_user.id,
+        Document.status != "DELETED"
+    )
     doc_res = await db.execute(doc_stmt)
     total_docs = doc_res.scalar() or 0
 

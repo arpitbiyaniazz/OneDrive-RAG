@@ -11,6 +11,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { DocumentRecord } from '../../types';
+import { getAuthHeaders } from '../../services/api';
 
 export function KnowledgeBaseTable() {
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
@@ -30,7 +31,10 @@ export function KnowledgeBaseTable() {
     setSyncing(true);
     setSyncMessage(null);
     try {
-      const res = await fetch('/api/sync/start?background=false', { method: 'POST' });
+      const res = await fetch('/api/sync/start?background=false', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
       if (res.ok) {
         const data = await res.json();
         const s = data.summary;
@@ -53,8 +57,8 @@ export function KnowledgeBaseTable() {
     setLoading(true);
     try {
       const [docsRes, statsRes] = await Promise.all([
-        fetch('/api/documents'),
-        fetch('/api/documents/stats'),
+        fetch('/api/documents', { headers: getAuthHeaders() }),
+        fetch('/api/documents/stats', { headers: getAuthHeaders() }),
       ]);
       if (docsRes.ok && statsRes.ok) {
         const dData = await docsRes.json();

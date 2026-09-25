@@ -83,9 +83,13 @@ class IncrementalSyncService:
             result.total_scanned = len(remote_items)
             remote_ids = {it["id"] for it in remote_items}
 
-            # 2. Fetch existing DB documents for this user
+            # 2. Fetch existing DB documents for this user (OneDrive only)
             async with AsyncSessionLocal() as session:
-                stmt = select(Document).where(Document.user_id == user_id, Document.status != "DELETED")
+                stmt = select(Document).where(
+                    Document.user_id == user_id,
+                    Document.status != "DELETED",
+                    Document.drive_type == "onedrive",
+                )
                 res = await session.execute(stmt)
                 db_docs = res.scalars().all()
                 db_doc_map = {d.onedrive_file_id: d for d in db_docs}

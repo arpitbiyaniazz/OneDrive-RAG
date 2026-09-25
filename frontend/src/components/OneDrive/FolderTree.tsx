@@ -16,6 +16,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { OneDriveItem, DriveType } from '../../types';
+import { getAuthHeaders } from '../../services/api';
 
 interface FolderTreeProps {
   onIndexSelection: (selectedIds: string[], selectedItems: OneDriveItem[]) => void;
@@ -44,7 +45,7 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
     setLoading(true);
     try {
       const endpoint = targetDrive === 'google_drive' ? '/api/gdrive/tree' : '/api/onedrive/tree';
-      const res = await fetch(endpoint);
+      const res = await fetch(endpoint, { headers: getAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         setItems(data.items || []);

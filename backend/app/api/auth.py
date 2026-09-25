@@ -21,12 +21,16 @@ async def get_current_user(
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """Dependency to retrieve the authenticated user from the JWT Bearer token."""
-    # In dev mode with no token provided, return or create a default demo user
+    # In dev mode with no token provided, return active user or default demo user
     if not credentials:
-        if settings.DEV_MOCK_ONEDRIVE:
-            stmt = select(User).where(User.email == "demo@contoso.com")
+        if settings.ENVIRONMENT == "development" or settings.DEV_MOCK_ONEDRIVE or settings.DEV_MOCK_GDRIVE:
+            stmt = (
+                select(User)
+                .join(OAuthAccount, OAuthAccount.user_id == User.id, isouter=True)
+                .order_by(OAuthAccount.created_at.desc().nullslast(), User.created_at.desc())
+            )
             res = await db.execute(stmt)
-            user = res.scalar_one_or_none()
+            user = res.scalars().first()
             if not user:
                 user = User(
                     email="demo@contoso.com",
@@ -303,15 +307,24 @@ async def google_oauth_callback(
 
 
 @router.get("/me")
-async def get_my_profile(current_user: User = Depends(get_current_user)):
+async def get_my_profile(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Returns the authenticated user and their cloud storage connection status."""
+    stmt = select(OAuthAccount.provider).where(OAuthAccount.user_id == current_user.id)
+    res = await db.execute(stmt)
+    providers = set(res.scalars().all())
+
     return {
         "id": current_user.id,
         "email": current_user.email,
         "full_name": current_user.full_name,
         "is_active": current_user.is_active,
-        "onedrive_connected": True,
-        "gdrive_connected": True,
+        "onedrive_connected": ("microsoft" in providers) or settings.DEV_MOCK_ONEDRIVE,
+        "gdrive_connected": ("google" in providers) or settings.DEV_MOCK_GDRIVE,
+        "has_google_oauth": "google" in providers,
+        "has_microsoft_oauth": "microsoft" in providers,
         "sandbox_mode": settings.DEV_MOCK_ONEDRIVE or settings.DEV_MOCK_GDRIVE,
     }
 
