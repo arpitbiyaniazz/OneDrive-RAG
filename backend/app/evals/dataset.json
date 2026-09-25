@@ -1,0 +1,37 @@
+[
+  {
+    "id": "eval_01",
+    "department": "HR",
+    "question": "How many annual leave days are employees entitled to per calendar year?",
+    "ground_truth_files": ["Leave Policy 2026.pdf"],
+    "expected_answer_key": "18, annual leave"
+  },
+  {
+    "id": "eval_02",
+    "department": "Finance",
+    "question": "What is the daily reimbursement limit for meals during business travel?",
+    "ground_truth_files": ["Expense Policy.txt"],
+    "expected_answer_key": "$75, meal"
+  },
+  {
+    "id": "eval_03",
+    "department": "Engineering",
+    "question": "What signature algorithm and expiration time are used for microservices API tokens?",
+    "ground_truth_files": ["API Documentation.pdf"],
+    "expected_answer_key": "RS256, 60 minutes"
+  },
+  {
+    "id": "eval_04",
+    "department": "Finance",
+    "question": "What is the 2026 budget allocated for the Engineering department in Budget 2026?",
+    "ground_truth_files": ["Budget 2026.xlsx"],
+    "expected_answer_key": "5450000, 1200000"
+  },
+  {
+    "id": "eval_05",
+    "department": "HR",
+    "question": "How many days per week are employees permitted to work remotely according to the handbook?",
+    "ground_truth_files": ["Employee Handbook.docx"],
+    "expected_answer_key": "3 days, remote"
+  }
+]
