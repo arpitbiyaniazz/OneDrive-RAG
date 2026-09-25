@@ -32,10 +32,11 @@ A production-ready enterprise RAG (Retrieval-Augmented Generation) chatbot desig
   - **OpenTelemetry**: Distributed tracing for FastAPI HTTP endpoints, SQLAlchemy / pgvector query latencies, Microsoft Graph API network calls, and async background workers.
   - **Langfuse**: LLM traces, token usage, cost attribution, prompt versioning (`v1`, `v2`), A/B experiments, and automated evaluation metrics (`faithfulness`, `context_recall`, `citation_accuracy`).
   - **Correlation Bridge**: Each Langfuse trace includes the active OpenTelemetry `trace_id` as metadata for unified infrastructure-to-LLM debugging.
-- **Microsoft OneDrive Integration**:
-  - Full Microsoft OAuth 2.0 flow with PKCE and AES-256 token encryption at rest.
+- **Microsoft OneDrive & Google Drive Multi-Cloud Integrations**:
+  - Full Microsoft Entra ID and Google Cloud OAuth 2.0 flow with PKCE and AES-256 token encryption at rest.
   - Multi-format document extractors: **PDF** (PyMuPDF), **DOCX** (python-docx), **XLSX** (openpyxl), **PPTX** (python-pptx), and **TXT**.
-  - Built-in `MockOneDriveProvider` allowing 100% full-stack sandbox development and testing without requiring live Azure credentials.
+  - On-the-fly conversion of native Google Workspace documents: **Google Docs** (.docx), **Google Sheets** (.xlsx), and **Google Slides** (.pptx).
+  - Built-in `MockOneDriveProvider` and `MockGoogleDriveProvider` allowing 100% full-stack sandbox development and testing without requiring live cloud credentials.
 - **pgvector & Structure-Aware Chunking**:
   - Semantic vector storage with 1536-dimensional embeddings.
   - Preserves document hierarchy, page numbers, section headers, and folder paths.
@@ -132,6 +133,7 @@ cd backend
 │   └── package.json
 ├── docs/
 │   ├── AZURE_SETUP.md        # Step-by-step Azure Entra ID registration guide
+│   ├── GOOGLE_SETUP.md       # Step-by-step Google Cloud Console & Drive API guide
 │   └── OBSERVABILITY_GUIDE.md # Detailed dual-branch telemetry documentation
 ├── docker-compose.yml        # PostgreSQL (pgvector) & Redis services
 └── README.md
