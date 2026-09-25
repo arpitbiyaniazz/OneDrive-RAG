@@ -11,15 +11,19 @@ import {
   ExternalLink,
   ShieldCheck,
   Zap,
+  LogOut,
 } from 'lucide-react';
-import { HealthStatus, TelemetryStatus, OneDriveItem } from './types';
-import { fetchHealth, fetchTelemetryStatus } from './services/api';
+import { HealthStatus, TelemetryStatus, OneDriveItem, UserProfile } from './types';
+import { fetchHealth, fetchTelemetryStatus, fetchCurrentUser, logoutUser, exchangeAuthCode } from './services/api';
 import { FolderTree } from './components/OneDrive/FolderTree';
 import { IngestionModal } from './components/OneDrive/IngestionModal';
 import { ChatBox } from './components/Chat/ChatBox';
 import { KnowledgeBaseTable } from './components/Dashboard/KnowledgeBaseTable';
+import { LoginPage } from './components/Auth/LoginPage';
 
 export function App() {
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [authLoading, setAuthLoading] = useState<boolean>(true);
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [telemetry, setTelemetry] = useState<TelemetryStatus | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -28,9 +32,31 @@ export function App() {
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
   useEffect(() => {
-    async function loadData() {
+    async function initApp() {
       try {
+        setAuthLoading(true);
         setLoading(true);
+
+        // 1. Check if OAuth redirect code is present in URL
+        const params = new URLSearchParams(window.location.search);
+        const code = params.get('code');
+        const state = params.get('state') || undefined;
+
+        if (code) {
+          try {
+            const authRes = await exchangeAuthCode(code, state);
+            setCurrentUser(authRes.user);
+            window.history.replaceState({}, document.title, window.location.pathname);
+          } catch (e) {
+            console.error('Failed to exchange OAuth code', e);
+          }
+        } else {
+          // 2. Fetch authenticated user profile
+          const user = await fetchCurrentUser();
+          setCurrentUser(user);
+        }
+
+        // 3. Load health & telemetry
         const [h, t] = await Promise.all([fetchHealth(), fetchTelemetryStatus()]);
         setHealth(h);
         setTelemetry(t);
@@ -39,10 +65,12 @@ export function App() {
         setError(err.message || 'Could not connect to backend');
       } finally {
         setLoading(false);
+        setAuthLoading(false);
       }
     }
-    loadData();
+    initApp();
   }, []);
+
 
   async function handleIndexSelection(selectedIds: string[], _items: OneDriveItem[]) {
     try {
@@ -58,6 +86,17 @@ export function App() {
     } catch (e) {
       console.error('Failed to trigger ingestion', e);
     }
+  }
+
+  // Render dedicated Login Page if user is not authenticated
+  if (!currentUser && !authLoading) {
+    return (
+      <LoginPage
+        onLoginSuccess={(user) => setCurrentUser(user)}
+        health={health}
+        telemetry={telemetry}
+      />
+    );
   }
 
   return (
@@ -108,7 +147,7 @@ export function App() {
             </div>
           </div>
 
-          {/* Status Badges */}
+          {/* Status Badges & User Profile */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             {loading ? (
               <span className="badge badge-info">
@@ -131,9 +170,73 @@ export function App() {
                 </span>
               </>
             )}
+
+            {/* User Profile Chip & Sign Out */}
+            {currentUser && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.6rem',
+                  padding: '0.35rem 0.75rem',
+                  marginLeft: '0.5rem',
+                  background: 'rgba(255, 255, 255, 0.05)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: 'var(--radius-full)',
+                }}
+              >
+                <div
+                  style={{
+                    width: '28px',
+                    height: '28px',
+                    borderRadius: '50%',
+                    background: 'linear-gradient(135deg, #0078d4, #06b6d4)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                    color: '#ffffff',
+                  }}
+                >
+                  {currentUser.full_name ? currentUser.full_name[0].toUpperCase() : 'U'}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <span style={{ fontSize: '0.8rem', fontWeight: 600, lineHeight: 1.2 }}>
+                    {currentUser.full_name || 'Enterprise User'}
+                  </span>
+                  <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                    {currentUser.email}
+                  </span>
+                </div>
+                <button
+                  onClick={async () => {
+                    await logoutUser();
+                    setCurrentUser(null);
+                  }}
+                  title="Sign Out"
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'var(--text-secondary)',
+                    cursor: 'pointer',
+                    padding: '4px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    borderRadius: '4px',
+                    marginLeft: '0.25rem',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.color = '#fb7185')}
+                  onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-secondary)')}
+                >
+                  <LogOut size={15} />
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </header>
+
 
       {/* Main Content Area */}
       <main style={{ flex: 1, maxWidth: '1280px', width: '100%', margin: '0 auto', padding: '2rem 1.5rem' }}>
