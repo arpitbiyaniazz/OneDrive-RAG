@@ -100,6 +100,74 @@ class MicrosoftGraphService:
                     raise ValueError(f"Failed to download OneDrive file: {res.text}")
                 return res.content
 
+    async def refresh_access_token(self, refresh_token: str) -> Dict[str, Any]:
+        """Refreshes an expired access token using the stored refresh token."""
+        token_url = f"{LOGIN_BASE_URL}/{self.tenant_id}/oauth2/v2.0/token"
+        data = {
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "scope": " ".join(self.scopes),
+        }
+        async with httpx.AsyncClient() as client:
+            res = await client.post(token_url, data=data)
+            if res.status_code != 200:
+                logger.error(f"Failed to refresh Microsoft token: {res.text}")
+                raise ValueError(f"Token refresh failed: {res.text}")
+            return res.json()
+
+    async def get_delta_changes(
+        self, access_token: str, delta_token_or_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Executes a Microsoft Graph delta query to track changed, new, and deleted files.
+        """
+        with trace_onedrive_call("get_delta_changes", "/me/drive/root/delta"):
+            headers = {"Authorization": f"Bearer {access_token}"}
+            if delta_token_or_url and delta_token_or_url.startswith("http"):
+                url = delta_token_or_url
+            elif delta_token_or_url:
+                url = f"{GRAPH_BASE_URL}/me/drive/root/delta?token={delta_token_or_url}"
+            else:
+                url = f"{GRAPH_BASE_URL}/me/drive/root/delta"
+
+            async with httpx.AsyncClient() as client:
+                res = await client.get(url, headers=headers)
+                if res.status_code != 200:
+                    raise ValueError(f"Failed to fetch delta changes: {res.text}")
+                return res.json()
+
+    async def create_subscription(
+        self,
+        access_token: str,
+        webhook_url: str,
+        client_state: str,
+        expiration_minutes: int = 4230,
+    ) -> Dict[str, Any]:
+        """
+        Creates a webhook subscription on Microsoft Graph for OneDrive drive changes.
+        """
+        with trace_onedrive_call("create_subscription", "/subscriptions"):
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            }
+            from datetime import timedelta
+            expiration_date = (datetime.now(timezone.utc) + timedelta(minutes=expiration_minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            payload = {
+                "changeType": "updated",
+                "notificationUrl": webhook_url,
+                "resource": "/me/drive/root",
+                "expirationDateTime": expiration_date,
+                "clientState": client_state,
+            }
+            async with httpx.AsyncClient() as client:
+                res = await client.post(f"{GRAPH_BASE_URL}/subscriptions", headers=headers, json=payload)
+                if res.status_code not in (200, 201):
+                    raise ValueError(f"Failed to create Microsoft Graph subscription: {res.text}")
+                return res.json()
+
 
 # ==============================================================================
 # Realistic Mock OneDrive Provider for Local Development and Immediate Testing
@@ -336,6 +404,48 @@ class MockOneDriveProvider:
     def clear_cache(self):
         """Clears the cached mock file bytes."""
         self._file_cache.clear()
+
+    async def refresh_access_token(self, refresh_token: str) -> Dict[str, Any]:
+        return {
+            "access_token": f"mock_refreshed_token_{refresh_token[:6]}",
+            "refresh_token": "mock_next_refresh_token",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+        }
+
+    async def get_delta_changes(self, access_token: str = "", delta_token_or_url: Optional[str] = None) -> Dict[str, Any]:
+        with trace_onedrive_call("mock_get_delta_changes", "/me/drive/root/delta"):
+            items = []
+            for folder_items in self._mock_tree.values():
+                for it in folder_items:
+                    items.append({
+                        "id": it["id"],
+                        "name": it["name"],
+                        "is_folder": it.get("is_folder", False),
+                        "webUrl": it.get("web_url"),
+                    })
+            return {
+                "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/drive/root/delta?token=mock_next_delta_token_123",
+                "value": items,
+            }
+
+    async def create_subscription(
+        self,
+        access_token: str = "",
+        webhook_url: str = "",
+        client_state: str = "",
+        expiration_minutes: int = 4230,
+    ) -> Dict[str, Any]:
+        with trace_onedrive_call("mock_create_subscription", "/subscriptions"):
+            return {
+                "id": "mock_subscription_sub_987",
+                "resource": "/me/drive/root",
+                "applicationId": settings.MICROSOFT_CLIENT_ID or "mock_app_id",
+                "changeType": "updated",
+                "clientState": client_state,
+                "notificationUrl": webhook_url,
+                "expirationDateTime": "2026-10-01T00:00:00Z",
+            }
 
 
 # Singletons

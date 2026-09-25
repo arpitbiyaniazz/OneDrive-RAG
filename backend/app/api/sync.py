@@ -66,3 +66,17 @@ async def get_sync_status(
         "is_syncing": sync_service.is_syncing,
         "last_result": sync_service.get_last_result(),
     }
+
+
+@router.get("/delta")
+async def get_delta_changes(
+    delta_token: Optional[str] = Query(None, description="Previous @odata.deltaLink or delta token"),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Queries Microsoft Graph delta API (Section 23) to track changed, new, or deleted OneDrive items.
+    """
+    from app.services.microsoft_graph import get_onedrive_service
+    service = get_onedrive_service()
+    data = await service.get_delta_changes(access_token="", delta_token_or_url=delta_token)
+    return data

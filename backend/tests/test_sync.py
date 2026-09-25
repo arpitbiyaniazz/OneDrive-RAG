@@ -62,3 +62,15 @@ async def test_sync_background_trigger():
         assert res.status_code == 200
         data = res.json()
         assert data["status"] in ["started", "already_running"]
+
+
+@pytest.mark.asyncio
+async def test_delta_sync_endpoint():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res = await ac.get("/api/sync/delta")
+        assert res.status_code == 200
+        data = res.json()
+        assert "@odata.deltaLink" in data
+        assert "value" in data
+        assert len(data["value"]) > 0
