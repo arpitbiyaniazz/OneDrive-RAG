@@ -233,14 +233,19 @@ class IngestionService:
                     }
                     chunks = self.chunker.chunk_document(parsed_doc, doc_meta_payload)
 
+                    if not chunks:
+                        logger.warning(f"No chunks produced for {filename} — skipping (preserving existing chunks if any)")
+                        processed_count += 1
+                        continue
+
                     # 5. Generate embeddings
                     chunk_texts = [c.content for c in chunks]
                     embeddings = await self.embedding_provider.embed_documents(chunk_texts)
 
-                    # 6. Database Upsert
+                    # 6. Database Upsert — only delete old chunks AFTER new ones are ready
                     if existing_doc:
                         doc = existing_doc
-                        # Delete existing chunks
+                        # Delete existing chunks only now that we have new ones ready
                         await session.execute(
                             delete(DocumentChunk).where(DocumentChunk.document_id == doc.id)
                         )
