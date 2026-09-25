@@ -50,9 +50,28 @@ def init_opentelemetry(app=None, engine=None):
 
         # 1. Configure Exporters
         if settings.OTEL_EXPORTER_OTLP_ENDPOINT and OTLPSpanExporter:
-            otlp_exporter = OTLPSpanExporter(endpoint=settings.OTEL_EXPORTER_OTLP_ENDPOINT, insecure=True)
+            if settings.OTEL_EXPORTER_OTLP_INSECURE is not None:
+                is_insecure = settings.OTEL_EXPORTER_OTLP_INSECURE
+            else:
+                is_insecure = not settings.OTEL_EXPORTER_OTLP_ENDPOINT.startswith("https://")
+
+            exporter_kwargs: Dict[str, Any] = {
+                "endpoint": settings.OTEL_EXPORTER_OTLP_ENDPOINT,
+                "insecure": is_insecure,
+            }
+
+            if settings.OTEL_EXPORTER_OTLP_HEADERS:
+                headers_dict = {}
+                for item in settings.OTEL_EXPORTER_OTLP_HEADERS.split(","):
+                    if "=" in item:
+                        k, v = item.split("=", 1)
+                        headers_dict[k.strip()] = v.strip()
+                if headers_dict:
+                    exporter_kwargs["headers"] = tuple(headers_dict.items())
+
+            otlp_exporter = OTLPSpanExporter(**exporter_kwargs)
             provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
-            logger.info(f"OpenTelemetry OTLP exporter enabled -> {settings.OTEL_EXPORTER_OTLP_ENDPOINT}")
+            logger.info(f"OpenTelemetry OTLP exporter enabled -> {settings.OTEL_EXPORTER_OTLP_ENDPOINT} (insecure={is_insecure})")
         elif settings.OTEL_CONSOLE_EXPORTER:
             provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
             logger.info("OpenTelemetry Console exporter enabled.")

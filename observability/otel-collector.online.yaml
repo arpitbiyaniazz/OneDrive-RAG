@@ -1,0 +1,58 @@
+# OpenTelemetry Collector Configuration - ONLINE (Cloud SaaS) Mode
+# Forwards spans and metrics to Cloud APMs (Honeycomb, Datadog, Grafana Cloud, New Relic)
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 512
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+  resourcedetection:
+    detectors: [env, system]
+    timeout: 2s
+
+exporters:
+  # 1. Cloud APM: Honeycomb (OTLP gRPC)
+  otlp/honeycomb:
+    endpoint: "api.honeycomb.io:443"
+    headers:
+      "x-honeycomb-team": "${env:HONEYCOMB_API_KEY}"
+
+  # 2. Cloud APM: Grafana Cloud Tempo (OTLP gRPC)
+  otlp/grafana:
+    endpoint: "${env:GRAFANA_TEMPO_ENDPOINT}"
+    headers:
+      "authorization": "Basic ${env:GRAFANA_TEMPO_AUTH}"
+
+  # 3. Cloud APM: New Relic (OTLP gRPC)
+  otlp/newrelic:
+    endpoint: "otlp.nr-data.net:4317"
+    headers:
+      "api-key": "${env:NEW_RELIC_LICENSE_KEY}"
+
+  # 4. Standard OTLP Generic Cloud Exporter (e.g. Dynatrace, Datadog OTLP ingest)
+  otlp/generic_cloud:
+    endpoint: "${env:CLOUD_OTLP_ENDPOINT}"
+    headers:
+      "authorization": "${env:CLOUD_OTLP_AUTH_HEADER}"
+
+  # Debug exporter for local verification
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, batch]
+      # Exporters can be customized based on your cloud provider (defaulting to debug + generic OTLP)
+      exporters: [debug]

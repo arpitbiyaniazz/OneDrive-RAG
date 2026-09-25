@@ -1,0 +1,35 @@
+version: '3.8'
+
+# ==============================================================================
+# ONLINE OBSERVABILITY GATEWAY (Cloud SaaS Mode)
+# ==============================================================================
+# - Langfuse: Sent directly to Langfuse Cloud -> https://cloud.langfuse.com
+# - OpenTelemetry: Forwarded via Collector to Cloud APMs (Datadog / Honeycomb / Grafana)
+# ==============================================================================
+
+services:
+  otel-collector-online:
+    image: otel/opentelemetry-collector-contrib:0.98.0
+    container_name: rag_observability_collector_online
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector.online.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
+      - "13133:13133" # Health check endpoint
+    environment:
+      - HONEYCOMB_API_KEY=${HONEYCOMB_API_KEY:-}
+      - GRAFANA_TEMPO_ENDPOINT=${GRAFANA_TEMPO_ENDPOINT:-}
+      - GRAFANA_TEMPO_AUTH=${GRAFANA_TEMPO_AUTH:-}
+      - NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY:-}
+      - CLOUD_OTLP_ENDPOINT=${CLOUD_OTLP_ENDPOINT:-}
+      - CLOUD_OTLP_AUTH_HEADER=${CLOUD_OTLP_AUTH_HEADER:-}
+    networks:
+      - obs_online_network
+
+networks:
+  obs_online_network:
+    name: rag_observability_online_network
+    driver: bridge

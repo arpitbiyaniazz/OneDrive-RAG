@@ -1,0 +1,23 @@
+# Prometheus Configuration - OFFLINE (Local) Mode
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+scrape_configs:
+  # 1. OpenTelemetry Collector Pipeline Metrics
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['otel-collector:8889']
+
+  # 2. RAG Backend Application Metrics
+  - job_name: 'onedrive-rag-backend'
+    metrics_path: '/metrics'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['backend:8000', 'host.docker.internal:8000']
+
+  # 3. Jaeger Internal Metrics
+  - job_name: 'jaeger'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['jaeger:14269']

@@ -1,0 +1,88 @@
+version: '3.8'
+
+# ==============================================================================
+# OFFLINE OBSERVABILITY STACK (100% Local, No Cloud Subscriptions Required)
+# ==============================================================================
+# - Jaeger: Distributed Traces UI -> http://localhost:16686
+# - Prometheus: Real-time Metrics UI -> http://localhost:9090
+# - OpenTelemetry Collector: Metrics & Traces Pipeline -> Ports 4317 / 4318
+# - Local Langfuse: Local LLM & Prompt Observability -> http://localhost:3000
+# ==============================================================================
+
+services:
+  # 1. Jaeger All-in-One: Local Distributed Tracing Dashboard
+  jaeger:
+    image: jaegertracing/all-in-one:1.56
+    container_name: rag_observability_jaeger
+    restart: unless-stopped
+    ports:
+      - "16686:16686" # Jaeger Web UI
+      - "4317:4317"   # OTLP gRPC receiver (receives spans directly from FastAPI or Collector)
+      - "4318:4318"   # OTLP HTTP receiver
+      - "14269:14269" # Jaeger metrics endpoint
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - SPAN_STORAGE_TYPE=memory
+    networks:
+      - obs_network
+
+  # 2. Prometheus: Local System & Application Metrics Engine
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: rag_observability_prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090" # Prometheus Web Dashboard
+    volumes:
+      - ./prometheus.offline.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    networks:
+      - obs_network
+
+  # 3. OpenTelemetry Collector (Contrib): Local Telemetry Gateway
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.98.0
+    container_name: rag_observability_collector
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector.offline.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "8889:8889"   # Prometheus metrics exporter
+      - "13133:13133" # Health check
+    depends_on:
+      - jaeger
+    networks:
+      - obs_network
+
+  # 4. Optional: Self-Hosted Local Langfuse Web UI & API (v2)
+  langfuse-local:
+    image: langfuse/langfuse:2
+    container_name: rag_observability_langfuse
+    restart: unless-stopped
+    ports:
+      - "3000:3000" # Local Langfuse Web UI
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://postgres:postgres@host.docker.internal:5432/onedrive_rag
+      - NEXTAUTH_SECRET=local-dev-langfuse-secret-32-chars-long!
+      - SALT=local-dev-langfuse-salt-32-chars-long!
+      - NEXTAUTH_URL=http://localhost:3000
+      - TELEMETRY_ENABLED=false
+      - SIGNUP_DISABLED=false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - obs_network
+
+volumes:
+  prometheus_data:
+
+networks:
+  obs_network:
+    name: rag_observability_network
+    driver: bridge

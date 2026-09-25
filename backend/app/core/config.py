@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     # OpenTelemetry
     OTEL_SERVICE_NAME: str = "onedrive-rag-backend"
     OTEL_EXPORTER_OTLP_ENDPOINT: Optional[str] = None
+    OTEL_EXPORTER_OTLP_HEADERS: Optional[str] = None
+    OTEL_EXPORTER_OTLP_INSECURE: Optional[bool] = None
     OTEL_CONSOLE_EXPORTER: bool = False
 
     # Langfuse
