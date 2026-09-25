@@ -38,7 +38,7 @@ export function App() {
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [telemetry, setTelemetry] = useState<TelemetryStatus | null>(null);
 
-  // Claude Chatbot Session Management
+  // Conversational Chatbot Session Management
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<ChatSessionItem[]>([
     {
@@ -111,7 +111,6 @@ export function App() {
   function handleSessionChange(newSessionId: string, firstQuery?: string) {
     setSessionId(newSessionId);
     if (firstQuery) {
-      // Add or update session title from user query
       setSessions((prev) => {
         const title = firstQuery.length > 32 ? firstQuery.substring(0, 32) + '...' : firstQuery;
         const exists = prev.some((s) => s.id === newSessionId);
@@ -163,20 +162,20 @@ export function App() {
         height: '100vh',
         width: '100vw',
         overflow: 'hidden',
-        background: 'var(--claude-bg)',
-        color: 'var(--claude-text)',
+        background: 'var(--app-bg)',
+        color: 'var(--app-text)',
       }}
     >
       {/* =========================================================================
-          1. Claude Collapsible Left Sidebar
+          1. Collapsible Left Sidebar (Enterprise Cloud Theme)
          ========================================================================= */}
       {isSidebarOpen && (
         <aside
           style={{
-            width: '260px',
+            width: '265px',
             height: '100%',
-            background: 'var(--claude-sidebar)',
-            borderRight: '1px solid var(--claude-border)',
+            background: 'var(--app-sidebar)',
+            borderRight: '1px solid var(--app-border)',
             display: 'flex',
             flexDirection: 'column',
             flexShrink: 0,
@@ -184,49 +183,51 @@ export function App() {
             transition: 'width 0.2s ease',
           }}
         >
-          {/* Sidebar Top: Logo & Collapse Button */}
+          {/* Sidebar Top: Previous Logo & Name */}
           <div
             style={{
-              padding: '1rem 1rem 0.75rem 1rem',
+              padding: '1.1rem 1rem 0.85rem 1rem',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
+              borderBottom: '1px solid var(--app-border)',
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+              {/* Previous Logo: Gradient rounded square with FolderSync */}
+              <div
                 style={{
-                  color: 'var(--claude-terracotta)',
-                  fontSize: '1.35rem',
-                  fontWeight: 900,
-                  lineHeight: 1,
+                  width: '36px',
+                  height: '36px',
+                  borderRadius: '10px',
+                  background: 'var(--brand-gradient)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  boxShadow: '0 4px 14px var(--brand-glow)',
+                  flexShrink: 0,
                 }}
               >
-                ✦
-              </span>
-              <span
-                style={{
-                  fontSize: '1rem',
-                  fontWeight: 700,
-                  letterSpacing: '-0.02em',
-                  color: 'var(--claude-text)',
-                }}
-              >
-                Claude
-              </span>
-              <span
-                style={{
-                  fontSize: '0.65rem',
-                  fontWeight: 700,
-                  padding: '0.15rem 0.4rem',
-                  background: 'var(--claude-terracotta-bg)',
-                  color: 'var(--claude-terracotta)',
-                  borderRadius: '4px',
-                  textTransform: 'uppercase',
-                }}
-              >
-                RAG
-              </span>
+                <FolderSync size={20} color="#ffffff" />
+              </div>
+
+              {/* Previous Name: Enterprise Cloud RAG */}
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <h1
+                  style={{
+                    fontSize: '0.98rem',
+                    fontWeight: 700,
+                    letterSpacing: '-0.02em',
+                    color: 'var(--app-text)',
+                    lineHeight: 1.2,
+                  }}
+                >
+                  Enterprise Cloud RAG
+                </h1>
+                <span style={{ fontSize: '0.68rem', color: 'var(--app-text-secondary)', lineHeight: 1.2 }}>
+                  OneDrive & Google Drive
+                </span>
+              </div>
             </div>
 
             <button
@@ -234,7 +235,7 @@ export function App() {
               style={{
                 background: 'transparent',
                 border: 'none',
-                color: 'var(--claude-text-muted)',
+                color: 'var(--app-text-muted)',
                 cursor: 'pointer',
                 padding: '4px',
                 borderRadius: '6px',
@@ -242,15 +243,15 @@ export function App() {
                 alignItems: 'center',
               }}
               title="Close sidebar"
-              onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--claude-text)')}
-              onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--claude-text-muted)')}
+              onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--app-text)')}
+              onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--app-text-muted)')}
             >
               <PanelLeftClose size={18} />
             </button>
           </div>
 
-          {/* New Chat Button (Claude Pill Style) */}
-          <div style={{ padding: '0.5rem 1rem 1rem 1rem' }}>
+          {/* New Chat Button */}
+          <div style={{ padding: '0.75rem 1rem 0.5rem 1rem' }}>
             <button
               onClick={handleNewChat}
               style={{
@@ -259,25 +260,27 @@ export function App() {
                 alignItems: 'center',
                 gap: '0.6rem',
                 padding: '0.65rem 0.9rem',
-                background: 'var(--claude-surface)',
-                border: '1px solid var(--claude-border)',
+                background: 'var(--app-surface)',
+                border: '1px solid var(--app-border)',
                 borderRadius: 'var(--radius-md)',
-                color: 'var(--claude-text)',
+                color: 'var(--app-text)',
                 fontSize: '0.875rem',
-                fontWeight: 500,
+                fontWeight: 600,
                 cursor: 'pointer',
                 transition: 'all 0.15s ease',
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.borderColor = 'var(--claude-terracotta)';
-                e.currentTarget.style.background = 'var(--claude-surface-hover)';
+                e.currentTarget.style.borderColor = 'var(--brand-primary)';
+                e.currentTarget.style.background = 'var(--app-surface-hover)';
+                e.currentTarget.style.boxShadow = '0 2px 8px var(--brand-glow)';
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.borderColor = 'var(--claude-border)';
-                e.currentTarget.style.background = 'var(--claude-surface)';
+                e.currentTarget.style.borderColor = 'var(--app-border)';
+                e.currentTarget.style.background = 'var(--app-surface)';
+                e.currentTarget.style.boxShadow = 'none';
               }}
             >
-              <Plus size={16} color="var(--claude-terracotta)" />
+              <Plus size={16} color="var(--brand-cyan)" />
               <span>Start new chat</span>
             </button>
           </div>
@@ -287,20 +290,20 @@ export function App() {
             style={{
               flex: 1,
               overflowY: 'auto',
-              padding: '0 0.5rem',
+              padding: '0.25rem 0.5rem',
               display: 'flex',
               flexDirection: 'column',
-              gap: '0.25rem',
+              gap: '0.2rem',
             }}
           >
             <div
               style={{
-                fontSize: '0.72rem',
-                fontWeight: 600,
-                color: 'var(--claude-text-muted)',
+                fontSize: '0.7rem',
+                fontWeight: 700,
+                color: 'var(--app-text-muted)',
                 padding: '0.5rem 0.6rem 0.25rem 0.6rem',
                 textTransform: 'uppercase',
-                letterSpacing: '0.04em',
+                letterSpacing: '0.05em',
               }}
             >
               Recent Chats
@@ -318,24 +321,25 @@ export function App() {
                     justifyContent: 'space-between',
                     padding: '0.55rem 0.75rem',
                     borderRadius: 'var(--radius-md)',
-                    background: isActive ? 'var(--claude-surface-hover)' : 'transparent',
-                    border: isActive ? '1px solid var(--claude-border-hover)' : '1px solid transparent',
+                    background: isActive ? 'var(--brand-bg)' : 'transparent',
+                    border: isActive ? '1px solid rgba(0, 120, 212, 0.4)' : '1px solid transparent',
                     cursor: 'pointer',
                     transition: 'all 0.15s ease',
-                    color: isActive ? 'var(--claude-text)' : 'var(--claude-text-secondary)',
+                    color: isActive ? '#60a5fa' : 'var(--app-text-secondary)',
                   }}
                   onMouseEnter={(e) => {
-                    if (!isActive) e.currentTarget.style.background = 'var(--claude-sidebar-hover)';
+                    if (!isActive) e.currentTarget.style.background = 'var(--app-sidebar-hover)';
                   }}
                   onMouseLeave={(e) => {
                     if (!isActive) e.currentTarget.style.background = 'transparent';
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
-                    <MessageSquare size={14} color={isActive ? 'var(--claude-terracotta)' : 'var(--claude-text-muted)'} />
+                    <MessageSquare size={14} color={isActive ? '#38bdf8' : 'var(--app-text-muted)'} />
                     <span
                       style={{
                         fontSize: '0.83rem',
+                        fontWeight: isActive ? 600 : 400,
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
@@ -350,7 +354,7 @@ export function App() {
                     style={{
                       background: 'transparent',
                       border: 'none',
-                      color: 'var(--claude-text-muted)',
+                      color: 'var(--app-text-muted)',
                       cursor: 'pointer',
                       padding: '2px',
                       display: 'flex',
@@ -363,7 +367,7 @@ export function App() {
                       e.currentTarget.style.opacity = '1';
                     }}
                     onMouseLeave={(e) => {
-                      e.currentTarget.style.color = 'var(--claude-text-muted)';
+                      e.currentTarget.style.color = 'var(--app-text-muted)';
                       e.currentTarget.style.opacity = '0.6';
                     }}
                   >
@@ -375,12 +379,12 @@ export function App() {
           </div>
 
           {/* Cloud Storage Knowledge Shortcut Card */}
-          <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid var(--claude-border)' }}>
+          <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid var(--app-border)' }}>
             <div
               style={{
                 padding: '0.75rem',
-                background: 'var(--claude-surface)',
-                border: '1px solid var(--claude-border)',
+                background: 'var(--app-surface)',
+                border: '1px solid var(--app-border)',
                 borderRadius: 'var(--radius-md)',
               }}
             >
@@ -392,7 +396,7 @@ export function App() {
                   marginBottom: '0.4rem',
                 }}
               >
-                <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--claude-text)' }}>
+                <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--app-text)' }}>
                   Connected Drives
                 </span>
                 <span
@@ -404,11 +408,11 @@ export function App() {
                     gap: '2px',
                   }}
                 >
-                  <CheckCircle2 size={11} /> Ready
+                  <CheckCircle2 size={11} /> Synced
                 </span>
               </div>
 
-              {/* Source tags */}
+              {/* Provider Badges */}
               <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.6rem' }}>
                 <span
                   style={{
@@ -447,21 +451,27 @@ export function App() {
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: '0.4rem',
-                  padding: '0.4rem 0.5rem',
+                  padding: '0.45rem 0.5rem',
                   background: 'rgba(255, 255, 255, 0.05)',
-                  border: '1px solid var(--claude-border)',
+                  border: '1px solid var(--app-border)',
                   borderRadius: 'var(--radius-sm)',
-                  color: 'var(--claude-text)',
+                  color: 'var(--app-text)',
                   fontSize: '0.75rem',
-                  fontWeight: 500,
+                  fontWeight: 600,
                   cursor: 'pointer',
                   transition: 'all 0.15s ease',
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--claude-terracotta)')}
-                onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--claude-border)')}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = 'var(--brand-primary)';
+                  e.currentTarget.style.background = 'var(--app-surface-hover)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = 'var(--app-border)';
+                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                }}
               >
-                <FolderSync size={13} color="var(--claude-terracotta)" />
-                <span>Manage Knowledge</span>
+                <FolderSync size={13} color="var(--brand-cyan)" />
+                <span>Manage Knowledge Base</span>
               </button>
             </div>
           </div>
@@ -471,7 +481,7 @@ export function App() {
             <div
               style={{
                 padding: '0.75rem 1rem',
-                borderTop: '1px solid var(--claude-border)',
+                borderTop: '1px solid var(--app-border)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
@@ -483,15 +493,15 @@ export function App() {
                     width: '32px',
                     height: '32px',
                     borderRadius: '50%',
-                    background: 'var(--claude-terracotta-bg)',
-                    border: '1px solid var(--claude-terracotta-glow)',
-                    color: 'var(--claude-terracotta)',
+                    background: 'var(--brand-gradient)',
+                    color: '#ffffff',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     fontSize: '0.85rem',
                     fontWeight: 700,
                     flexShrink: 0,
+                    boxShadow: '0 2px 8px var(--brand-glow)',
                   }}
                 >
                   {currentUser.full_name ? currentUser.full_name[0].toUpperCase() : 'U'}
@@ -511,7 +521,7 @@ export function App() {
                   <span
                     style={{
                       fontSize: '0.68rem',
-                      color: 'var(--claude-text-muted)',
+                      color: 'var(--app-text-muted)',
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
                       whiteSpace: 'nowrap',
@@ -531,7 +541,7 @@ export function App() {
                 style={{
                   background: 'transparent',
                   border: 'none',
-                  color: 'var(--claude-text-muted)',
+                  color: 'var(--app-text-muted)',
                   cursor: 'pointer',
                   padding: '6px',
                   borderRadius: '4px',
@@ -539,7 +549,7 @@ export function App() {
                   alignItems: 'center',
                 }}
                 onMouseEnter={(e) => (e.currentTarget.style.color = '#fb7185')}
-                onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--claude-text-muted)')}
+                onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--app-text-muted)')}
               >
                 <LogOut size={16} />
               </button>
@@ -549,7 +559,7 @@ export function App() {
       )}
 
       {/* =========================================================================
-          2. Main Chat Canvas (Clean Claude Interface)
+          2. Main Chat Canvas
          ========================================================================= */}
       <main
         style={{
@@ -559,7 +569,7 @@ export function App() {
           flexDirection: 'column',
           position: 'relative',
           overflow: 'hidden',
-          background: 'var(--claude-bg)',
+          background: 'var(--app-bg)',
         }}
       >
         {/* Toggle Sidebar Button (shown when sidebar is closed) */}
@@ -568,30 +578,31 @@ export function App() {
             onClick={() => setIsSidebarOpen(true)}
             style={{
               position: 'absolute',
-              top: '0.75rem',
+              top: '0.85rem',
               left: '1rem',
               zIndex: 40,
-              background: 'var(--claude-surface)',
-              border: '1px solid var(--claude-border)',
+              background: 'var(--app-surface)',
+              border: '1px solid var(--app-border)',
               borderRadius: 'var(--radius-md)',
-              color: 'var(--claude-text-muted)',
+              color: 'var(--app-text-secondary)',
               cursor: 'pointer',
               padding: '6px 8px',
               display: 'flex',
               alignItems: 'center',
-              gap: '0.4rem',
+              gap: '0.45rem',
               fontSize: '0.8rem',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
             }}
             title="Open sidebar"
-            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--claude-text)')}
-            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--claude-text-muted)')}
+            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--app-text)')}
+            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--app-text-secondary)')}
           >
             <PanelLeftOpen size={16} />
-            <span style={{ color: 'var(--claude-terracotta)', fontWeight: 800 }}>✦</span>
+            <span style={{ color: 'var(--brand-cyan)', fontWeight: 700 }}>Enterprise Cloud RAG</span>
           </button>
         )}
 
-        {/* Pure Claude Chat Experience */}
+        {/* Clean Conversational Chat Experience */}
         <ChatBox
           sessionId={sessionId}
           onSessionChange={handleSessionChange}
@@ -630,8 +641,8 @@ export function App() {
               position: 'relative',
               width: 'min(760px, 94vw)',
               height: '100%',
-              background: 'var(--claude-surface)',
-              borderLeft: '1px solid var(--claude-border)',
+              background: 'var(--app-surface)',
+              borderLeft: '1px solid var(--app-border)',
               boxShadow: '-8px 0 32px rgba(0, 0, 0, 0.6)',
               display: 'flex',
               flexDirection: 'column',
@@ -643,7 +654,7 @@ export function App() {
             <div
               style={{
                 padding: '1.25rem 1.5rem',
-                borderBottom: '1px solid var(--claude-border)',
+                borderBottom: '1px solid var(--app-border)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
@@ -655,20 +666,21 @@ export function App() {
                     width: '32px',
                     height: '32px',
                     borderRadius: '8px',
-                    background: 'var(--claude-terracotta-bg)',
+                    background: 'var(--brand-gradient)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    color: 'var(--claude-terracotta)',
+                    color: '#ffffff',
+                    boxShadow: '0 2px 8px var(--brand-glow)',
                   }}
                 >
-                  <Database size={18} />
+                  <Database size={17} />
                 </div>
                 <div>
-                  <h3 style={{ fontSize: '1.05rem', fontWeight: 600 }}>
+                  <h3 style={{ fontSize: '1.05rem', fontWeight: 700 }}>
                     Cloud Drive Knowledge Base
                   </h3>
-                  <span style={{ fontSize: '0.75rem', color: 'var(--claude-text-muted)' }}>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--app-text-muted)' }}>
                     OneDrive & Google Drive documents indexed in pgvector
                   </span>
                 </div>
@@ -679,7 +691,7 @@ export function App() {
                 style={{
                   background: 'transparent',
                   border: 'none',
-                  color: 'var(--claude-text-muted)',
+                  color: 'var(--app-text-muted)',
                   cursor: 'pointer',
                   padding: '6px',
                   borderRadius: '6px',
@@ -687,8 +699,8 @@ export function App() {
                   alignItems: 'center',
                 }}
                 title="Close drawer"
-                onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--claude-text)')}
-                onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--claude-text-muted)')}
+                onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--app-text)')}
+                onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--app-text-muted)')}
               >
                 <X size={20} />
               </button>
@@ -700,8 +712,8 @@ export function App() {
                 display: 'flex',
                 gap: '0.5rem',
                 padding: '0.75rem 1.5rem',
-                borderBottom: '1px solid var(--claude-border)',
-                background: 'rgba(0, 0, 0, 0.15)',
+                borderBottom: '1px solid var(--app-border)',
+                background: 'rgba(0, 0, 0, 0.2)',
               }}
             >
               <button
@@ -712,9 +724,9 @@ export function App() {
                   gap: '0.4rem',
                   padding: '0.45rem 0.85rem',
                   borderRadius: 'var(--radius-md)',
-                  background: knowledgeTab === 'browse' ? 'var(--claude-terracotta-bg)' : 'transparent',
-                  color: knowledgeTab === 'browse' ? 'var(--claude-terracotta)' : 'var(--claude-text-secondary)',
-                  border: knowledgeTab === 'browse' ? '1px solid var(--claude-terracotta-glow)' : '1px solid transparent',
+                  background: knowledgeTab === 'browse' ? 'var(--brand-bg)' : 'transparent',
+                  color: knowledgeTab === 'browse' ? '#60a5fa' : 'var(--app-text-secondary)',
+                  border: knowledgeTab === 'browse' ? '1px solid rgba(0, 120, 212, 0.4)' : '1px solid transparent',
                   fontWeight: 600,
                   fontSize: '0.8125rem',
                   cursor: 'pointer',
@@ -733,9 +745,9 @@ export function App() {
                   gap: '0.4rem',
                   padding: '0.45rem 0.85rem',
                   borderRadius: 'var(--radius-md)',
-                  background: knowledgeTab === 'indexed' ? 'var(--claude-terracotta-bg)' : 'transparent',
-                  color: knowledgeTab === 'indexed' ? 'var(--claude-terracotta)' : 'var(--claude-text-secondary)',
-                  border: knowledgeTab === 'indexed' ? '1px solid var(--claude-terracotta-glow)' : '1px solid transparent',
+                  background: knowledgeTab === 'indexed' ? 'var(--brand-bg)' : 'transparent',
+                  color: knowledgeTab === 'indexed' ? '#60a5fa' : 'var(--app-text-secondary)',
+                  border: knowledgeTab === 'indexed' ? '1px solid rgba(0, 120, 212, 0.4)' : '1px solid transparent',
                   fontWeight: 600,
                   fontSize: '0.8125rem',
                   cursor: 'pointer',
@@ -774,7 +786,7 @@ export function App() {
           jobId={activeJobId}
           onClose={() => setActiveJobId(null)}
           onComplete={() => {
-            // Refreshes data seamlessly
+            // Refreshes data
           }}
         />
       )}

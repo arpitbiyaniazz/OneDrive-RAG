@@ -11,6 +11,8 @@ import {
   Database,
   ChevronDown,
   StopCircle,
+  Bot,
+  Sparkles,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { ChatMessage, Citation } from '../../types';
@@ -19,7 +21,6 @@ interface ChatBoxProps {
   sessionId: string | null;
   onSessionChange: (newSessionId: string, firstQuery?: string) => void;
   onOpenKnowledgeDrawer: () => void;
-  initialQuery?: string;
   userName?: string;
 }
 
@@ -34,7 +35,7 @@ export function ChatBox({
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [feedbackSent, setFeedbackSent] = useState<Record<string, number>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState<string>('Claude 3.5 Sonnet (Hybrid RAG)');
+  const [selectedModel, setSelectedModel] = useState<string>('Enterprise RAG (GPT-4o Mini & Hybrid)');
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState<boolean>(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -54,7 +55,7 @@ export function ChatBox({
     }
   }, [inputQuery]);
 
-  // Focus textarea on load
+  // Focus textarea on load / new session
   useEffect(() => {
     textareaRef.current?.focus();
   }, [sessionId]);
@@ -158,7 +159,7 @@ export function ChatBox({
                   );
                 }
               } catch {
-                // Ignore chunk parse errors
+                // Ignore parse errors on partial chunks
               }
             }
           }
@@ -166,7 +167,6 @@ export function ChatBox({
       }
     } catch (e: any) {
       if (e.name === 'AbortError') {
-        // User stopped generation manually
         setMessages((prev) =>
           prev.map((m) =>
             m.id === assistantMsgId
@@ -256,18 +256,18 @@ export function ChatBox({
         height: '100%',
         width: '100%',
         position: 'relative',
-        background: 'var(--claude-bg)',
+        background: 'var(--app-bg)',
       }}
     >
-      {/* Top Claude Minimalist Navigation Bar */}
+      {/* Top Navigation Bar */}
       <div
         style={{
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          padding: '0.75rem 1.5rem',
-          borderBottom: '1px solid var(--claude-border)',
-          background: 'rgba(30, 30, 28, 0.75)',
+          padding: '0.85rem 1.5rem',
+          borderBottom: '1px solid var(--app-border)',
+          background: 'rgba(10, 13, 20, 0.75)',
           backdropFilter: 'blur(10px)',
           zIndex: 10,
         }}
@@ -279,31 +279,41 @@ export function ChatBox({
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: '0.45rem',
-              padding: '0.35rem 0.75rem',
-              background: 'transparent',
-              border: '1px solid transparent',
+              gap: '0.5rem',
+              padding: '0.4rem 0.85rem',
+              background: 'var(--app-surface)',
+              border: '1px solid var(--app-border)',
               borderRadius: 'var(--radius-md)',
-              color: 'var(--claude-text)',
+              color: 'var(--app-text)',
               fontSize: '0.85rem',
               fontWeight: 600,
               cursor: 'pointer',
               transition: 'all 0.15s ease',
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'var(--claude-surface)';
-              e.currentTarget.style.borderColor = 'var(--claude-border)';
+              e.currentTarget.style.borderColor = 'var(--brand-primary)';
             }}
             onMouseLeave={(e) => {
               if (!isModelDropdownOpen) {
-                e.currentTarget.style.background = 'transparent';
-                e.currentTarget.style.borderColor = 'transparent';
+                e.currentTarget.style.borderColor = 'var(--app-border)';
               }
             }}
           >
-            <span style={{ color: 'var(--claude-terracotta)', fontSize: '1rem', fontWeight: 800 }}>✦</span>
+            <div
+              style={{
+                width: '18px',
+                height: '18px',
+                borderRadius: '4px',
+                background: 'var(--brand-gradient)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Bot size={11} color="#ffffff" />
+            </div>
             <span>{selectedModel}</span>
-            <ChevronDown size={14} color="var(--claude-text-muted)" />
+            <ChevronDown size={14} color="var(--app-text-muted)" />
           </button>
 
           {isModelDropdownOpen && (
@@ -312,18 +322,18 @@ export function ChatBox({
                 position: 'absolute',
                 top: 'calc(100% + 6px)',
                 left: 0,
-                width: '260px',
-                background: 'var(--claude-surface)',
-                border: '1px solid var(--claude-border)',
+                width: '280px',
+                background: 'var(--app-surface)',
+                border: '1px solid var(--app-border)',
                 borderRadius: 'var(--radius-md)',
-                boxShadow: '0 10px 30px rgba(0,0,0,0.5)',
+                boxShadow: '0 10px 30px rgba(0,0,0,0.6)',
                 padding: '0.4rem',
                 zIndex: 50,
               }}
             >
               {[
-                { name: 'Claude 3.5 Sonnet (Hybrid RAG)', desc: 'Most intelligent & grounded synthesis' },
-                { name: 'GPT-4o Mini (High Speed)', desc: 'Fast semantic retrieval & answers' },
+                { name: 'Enterprise RAG (GPT-4o Mini & Hybrid)', desc: 'Optimized speed & multi-cloud retrieval' },
+                { name: 'Enterprise RAG High-Precision (GPT-4o)', desc: 'Deep synthesis & complex table analysis' },
               ].map((model) => (
                 <div
                   key={model.name}
@@ -332,24 +342,24 @@ export function ChatBox({
                     setIsModelDropdownOpen(false);
                   }}
                   style={{
-                    padding: '0.5rem 0.75rem',
+                    padding: '0.55rem 0.75rem',
                     borderRadius: 'var(--radius-sm)',
                     cursor: 'pointer',
-                    background: selectedModel === model.name ? 'var(--claude-terracotta-bg)' : 'transparent',
-                    border: selectedModel === model.name ? '1px solid var(--claude-terracotta-glow)' : '1px solid transparent',
+                    background: selectedModel === model.name ? 'var(--brand-bg)' : 'transparent',
+                    border: selectedModel === model.name ? '1px solid rgba(0, 120, 212, 0.4)' : '1px solid transparent',
                     marginBottom: '0.2rem',
                   }}
                   onMouseEnter={(e) => {
-                    if (selectedModel !== model.name) e.currentTarget.style.background = 'var(--claude-surface-hover)';
+                    if (selectedModel !== model.name) e.currentTarget.style.background = 'var(--app-surface-hover)';
                   }}
                   onMouseLeave={(e) => {
                     if (selectedModel !== model.name) e.currentTarget.style.background = 'transparent';
                   }}
                 >
-                  <div style={{ fontSize: '0.825rem', fontWeight: 600, color: 'var(--claude-text)' }}>
+                  <div style={{ fontSize: '0.825rem', fontWeight: 600, color: 'var(--app-text)' }}>
                     {model.name}
                   </div>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--claude-text-muted)' }}>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--app-text-muted)' }}>
                     {model.desc}
                   </div>
                 </div>
@@ -365,26 +375,26 @@ export function ChatBox({
             display: 'flex',
             alignItems: 'center',
             gap: '0.45rem',
-            padding: '0.35rem 0.8rem',
-            background: 'var(--claude-surface)',
-            border: '1px solid var(--claude-border)',
+            padding: '0.4rem 0.85rem',
+            background: 'var(--app-surface)',
+            border: '1px solid var(--app-border)',
             borderRadius: 'var(--radius-full)',
-            color: 'var(--claude-text-secondary)',
+            color: 'var(--app-text-secondary)',
             fontSize: '0.78rem',
-            fontWeight: 500,
+            fontWeight: 600,
             cursor: 'pointer',
             transition: 'all 0.15s ease',
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.borderColor = 'var(--claude-terracotta)';
-            e.currentTarget.style.color = 'var(--claude-text)';
+            e.currentTarget.style.borderColor = 'var(--brand-primary)';
+            e.currentTarget.style.color = '#38bdf8';
           }}
           onMouseLeave={(e) => {
-            e.currentTarget.style.borderColor = 'var(--claude-border)';
-            e.currentTarget.style.color = 'var(--claude-text-secondary)';
+            e.currentTarget.style.borderColor = 'var(--app-border)';
+            e.currentTarget.style.color = 'var(--app-text-secondary)';
           }}
         >
-          <Database size={13} color="var(--claude-terracotta)" />
+          <Database size={13} color="var(--brand-cyan)" />
           <span>Knowledge & Cloud Drive</span>
         </button>
       </div>
@@ -397,10 +407,10 @@ export function ChatBox({
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
-          padding: '1.5rem 1rem 8rem 1rem', // generous bottom padding so text isn't covered by floating input
+          padding: '1.5rem 1rem 8rem 1rem',
         }}
       >
-        <div style={{ width: '100%', maxWidth: '768px' }}>
+        <div style={{ width: '100%', maxWidth: '780px' }}>
           {/* Empty State / Welcome Screen */}
           {messages.length === 0 ? (
             <div
@@ -415,52 +425,48 @@ export function ChatBox({
               }}
               className="animate-fade-in"
             >
-              {/* Claude Signature Terracotta Sparkle Emblem */}
+              {/* Previous Logo in Welcome Header */}
               <div
                 style={{
-                  width: '56px',
-                  height: '56px',
+                  width: '60px',
+                  height: '60px',
                   borderRadius: '16px',
-                  background: 'var(--claude-terracotta-bg)',
-                  border: '1px solid var(--claude-terracotta-glow)',
+                  background: 'var(--brand-gradient)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  color: 'var(--claude-terracotta)',
-                  fontSize: '2rem',
-                  fontWeight: 900,
+                  boxShadow: '0 8px 28px var(--brand-glow)',
                   marginBottom: '1.25rem',
-                  boxShadow: '0 8px 24px var(--claude-terracotta-glow)',
                 }}
               >
-                ✦
+                <FolderSync size={32} color="#ffffff" />
               </div>
 
               <h2
                 style={{
-                  fontSize: '1.75rem',
-                  fontWeight: 600,
+                  fontSize: '1.8rem',
+                  fontWeight: 800,
                   letterSpacing: '-0.02em',
                   marginBottom: '0.4rem',
-                  color: 'var(--claude-text)',
+                  color: 'var(--app-text)',
                 }}
               >
-                Good day, {userName}
+                Enterprise Cloud RAG
               </h2>
 
               <p
                 style={{
                   fontSize: '0.925rem',
-                  color: 'var(--claude-text-muted)',
-                  maxWidth: '460px',
-                  lineHeight: '1.55',
+                  color: 'var(--app-text-secondary)',
+                  maxWidth: '480px',
+                  lineHeight: '1.6',
                   marginBottom: '2.5rem',
                 }}
               >
-                Ask questions across your OneDrive and Google Drive knowledge base. Answers are strictly grounded with verified source links.
+                Welcome, {userName}. Ask questions across your synced OneDrive and Google Drive files. Answers are verified and grounded in enterprise documents with clickable citations.
               </p>
 
-              {/* Claude Style Sample Prompt Cards */}
+              {/* Sample Prompt Cards */}
               <div
                 style={{
                   display: 'grid',
@@ -476,8 +482,8 @@ export function ChatBox({
                     onClick={() => handleSend(prompt.query)}
                     style={{
                       padding: '1rem 1.15rem',
-                      background: 'var(--claude-surface)',
-                      border: '1px solid var(--claude-border)',
+                      background: 'var(--app-surface)',
+                      border: '1px solid var(--app-border)',
                       borderRadius: 'var(--radius-lg)',
                       cursor: 'pointer',
                       transition: 'all 0.18s ease',
@@ -486,20 +492,22 @@ export function ChatBox({
                       gap: '0.25rem',
                     }}
                     onMouseEnter={(e) => {
-                      e.currentTarget.style.borderColor = 'var(--claude-terracotta)';
-                      e.currentTarget.style.background = 'var(--claude-surface-hover)';
+                      e.currentTarget.style.borderColor = 'var(--brand-primary)';
+                      e.currentTarget.style.background = 'var(--app-surface-hover)';
+                      e.currentTarget.style.boxShadow = '0 4px 16px var(--brand-glow)';
                       e.currentTarget.style.transform = 'translateY(-2px)';
                     }}
                     onMouseLeave={(e) => {
-                      e.currentTarget.style.borderColor = 'var(--claude-border)';
-                      e.currentTarget.style.background = 'var(--claude-surface)';
+                      e.currentTarget.style.borderColor = 'var(--app-border)';
+                      e.currentTarget.style.background = 'var(--app-surface)';
+                      e.currentTarget.style.boxShadow = 'none';
                       e.currentTarget.style.transform = 'translateY(0)';
                     }}
                   >
-                    <span style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--claude-text)' }}>
+                    <span style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--app-text)' }}>
                       {prompt.title}
                     </span>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--claude-text-muted)' }}>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--app-text-muted)' }}>
                       {prompt.subtitle}
                     </span>
                   </div>
@@ -525,11 +533,11 @@ export function ChatBox({
                       <div
                         style={{
                           maxWidth: '82%',
-                          background: 'var(--claude-surface)',
-                          border: '1px solid var(--claude-border)',
+                          background: 'linear-gradient(135deg, rgba(0, 120, 212, 0.25) 0%, rgba(6, 182, 212, 0.15) 100%)',
+                          border: '1px solid rgba(0, 120, 212, 0.35)',
                           borderRadius: '20px',
                           padding: '0.9rem 1.25rem',
-                          color: 'var(--claude-text)',
+                          color: '#ffffff',
                           fontSize: '0.95rem',
                           lineHeight: '1.6',
                         }}
@@ -540,25 +548,23 @@ export function ChatBox({
                   ) : (
                     /* Assistant Message */
                     <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
-                      {/* Terracotta Sparkle Avatar */}
+                      {/* Logo Avatar: Electric Blue / Cyan Gradient */}
                       <div
                         style={{
-                          width: '32px',
-                          height: '32px',
+                          width: '34px',
+                          height: '34px',
                           borderRadius: '10px',
-                          background: 'var(--claude-terracotta-bg)',
-                          border: '1px solid var(--claude-terracotta-glow)',
+                          background: 'var(--brand-gradient)',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
-                          color: 'var(--claude-terracotta)',
-                          fontSize: '1.1rem',
-                          fontWeight: 800,
+                          color: '#ffffff',
                           flexShrink: 0,
                           marginTop: '2px',
+                          boxShadow: '0 4px 12px var(--brand-glow)',
                         }}
                       >
-                        ✦
+                        <Bot size={18} />
                       </div>
 
                       <div style={{ flex: 1, minWidth: 0 }}>
@@ -566,12 +572,12 @@ export function ChatBox({
                         <div
                           style={{
                             fontSize: '0.85rem',
-                            fontWeight: 600,
-                            color: 'var(--claude-text-secondary)',
+                            fontWeight: 700,
+                            color: '#38bdf8',
                             marginBottom: '0.4rem',
                           }}
                         >
-                          Claude
+                          Enterprise Cloud RAG
                         </div>
 
                         {/* Content */}
@@ -579,20 +585,20 @@ export function ChatBox({
                           {msg.content ? (
                             <ReactMarkdown>{msg.content}</ReactMarkdown>
                           ) : (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--claude-text-muted)' }}>
-                              <span style={{ color: 'var(--claude-terracotta)', animation: 'pulseGlow 1.5s infinite' }}>✦</span>
-                              <span>Searching enterprise knowledge base...</span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--app-text-muted)' }}>
+                              <Sparkles size={16} color="var(--brand-cyan)" className="animate-spin" />
+                              <span>Searching multi-cloud documents & generating answer...</span>
                             </div>
                           )}
                         </div>
 
-                        {/* Verified Grounded Citations */}
+                        {/* Grounded Citations */}
                         {msg.citations && msg.citations.length > 0 && (
                           <div
                             style={{
                               marginTop: '1.25rem',
                               paddingTop: '0.85rem',
-                              borderTop: '1px solid var(--claude-border)',
+                              borderTop: '1px solid var(--app-border)',
                             }}
                           >
                             <span
@@ -601,7 +607,7 @@ export function ChatBox({
                                 fontWeight: 700,
                                 textTransform: 'uppercase',
                                 letterSpacing: '0.05em',
-                                color: 'var(--claude-text-muted)',
+                                color: 'var(--app-text-muted)',
                                 display: 'block',
                                 marginBottom: '0.5rem',
                               }}
@@ -624,7 +630,7 @@ export function ChatBox({
                                       gap: '0.4rem',
                                       padding: '0.35rem 0.65rem',
                                       background: isGDrive ? 'var(--gdrive-green-bg)' : 'var(--onedrive-blue-bg)',
-                                      border: isGDrive ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(59, 130, 246, 0.3)',
+                                      border: isGDrive ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(0, 120, 212, 0.35)',
                                       borderRadius: 'var(--radius-sm)',
                                       color: isGDrive ? '#6ee7b7' : '#93c5fd',
                                       fontSize: '0.75rem',
@@ -648,14 +654,14 @@ export function ChatBox({
                           </div>
                         )}
 
-                        {/* Claude Message Actions (Copy, Feedback, Retry) */}
+                        {/* Action buttons (Copy, Feedback) */}
                         <div
                           style={{
                             display: 'flex',
                             alignItems: 'center',
                             gap: '0.75rem',
                             marginTop: '0.85rem',
-                            color: 'var(--claude-text-muted)',
+                            color: 'var(--app-text-muted)',
                             fontSize: '0.75rem',
                           }}
                         >
@@ -664,7 +670,7 @@ export function ChatBox({
                             style={{
                               background: 'transparent',
                               border: 'none',
-                              color: 'var(--claude-text-muted)',
+                              color: 'var(--app-text-muted)',
                               cursor: 'pointer',
                               display: 'flex',
                               alignItems: 'center',
@@ -694,12 +700,12 @@ export function ChatBox({
                                 style={{
                                   background: feedbackSent[msg.id] === 1 ? 'rgba(16,185,129,0.15)' : 'transparent',
                                   border: 'none',
-                                  color: feedbackSent[msg.id] === 1 ? '#34d399' : 'var(--claude-text-muted)',
+                                  color: feedbackSent[msg.id] === 1 ? '#34d399' : 'var(--app-text-muted)',
                                   cursor: 'pointer',
                                   padding: '2px 4px',
                                   borderRadius: '4px',
                                 }}
-                                title="Good response (logs to Langfuse)"
+                                title="Good response (logged to Langfuse)"
                               >
                                 <ThumbsUp size={13} />
                               </button>
@@ -708,12 +714,12 @@ export function ChatBox({
                                 style={{
                                   background: feedbackSent[msg.id] === -1 ? 'rgba(244,63,94,0.15)' : 'transparent',
                                   border: 'none',
-                                  color: feedbackSent[msg.id] === -1 ? '#fb7185' : 'var(--claude-text-muted)',
+                                  color: feedbackSent[msg.id] === -1 ? '#fb7185' : 'var(--app-text-muted)',
                                   cursor: 'pointer',
                                   padding: '2px 4px',
                                   borderRadius: '4px',
                                 }}
-                                title="Poor response (logs to Langfuse)"
+                                title="Poor response (logged to Langfuse)"
                               >
                                 <ThumbsDown size={13} />
                               </button>
@@ -731,7 +737,7 @@ export function ChatBox({
         </div>
       </div>
 
-      {/* Claude Bottom Floating Input Bar */}
+      {/* Bottom Floating Input Bar */}
       <div
         style={{
           position: 'absolute',
@@ -742,26 +748,23 @@ export function ChatBox({
           flexDirection: 'column',
           alignItems: 'center',
           padding: '0.75rem 1.5rem 1.25rem 1.5rem',
-          background: 'linear-gradient(to top, var(--claude-bg) 75%, transparent 100%)',
+          background: 'linear-gradient(to top, var(--app-bg) 75%, transparent 100%)',
           zIndex: 20,
         }}
       >
         <div
           style={{
             width: '100%',
-            maxWidth: '768px',
-            background: 'var(--claude-input-bg)',
-            border: '1px solid var(--claude-border)',
+            maxWidth: '780px',
+            background: 'var(--app-input-bg)',
+            border: '1px solid var(--app-border)',
             borderRadius: 'var(--radius-xl)',
-            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5)',
             padding: '0.75rem 1rem',
             display: 'flex',
             flexDirection: 'column',
             gap: '0.5rem',
-            transition: 'border-color 0.15s ease',
-          }}
-          onFocus={() => {
-            // Highlight border on focus
+            transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
           }}
         >
           {/* Multiline auto-expanding textarea */}
@@ -771,7 +774,7 @@ export function ChatBox({
             value={inputQuery}
             onChange={(e) => setInputQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Reply to Claude or ask a question about your documents..."
+            placeholder="Ask a question about your OneDrive or Google Drive documents..."
             disabled={isStreaming}
             style={{
               width: '100%',
@@ -779,7 +782,7 @@ export function ChatBox({
               border: 'none',
               outline: 'none',
               resize: 'none',
-              color: 'var(--claude-text)',
+              color: 'var(--app-text)',
               fontSize: '0.95rem',
               lineHeight: '1.5',
               fontFamily: 'var(--font-sans)',
@@ -796,33 +799,34 @@ export function ChatBox({
               paddingTop: '0.25rem',
             }}
           >
-            {/* Left side: Context badge / Add files button */}
+            {/* Left side: Context badge */}
             <button
               onClick={onOpenKnowledgeDrawer}
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: '0.35rem',
-                padding: '0.25rem 0.6rem',
+                padding: '0.25rem 0.65rem',
                 background: 'rgba(255, 255, 255, 0.05)',
-                border: '1px solid var(--claude-border)',
+                border: '1px solid var(--app-border)',
                 borderRadius: 'var(--radius-full)',
-                color: 'var(--claude-text-secondary)',
+                color: 'var(--app-text-secondary)',
                 fontSize: '0.75rem',
+                fontWeight: 600,
                 cursor: 'pointer',
                 transition: 'all 0.15s ease',
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.borderColor = 'var(--claude-terracotta)';
-                e.currentTarget.style.color = 'var(--claude-text)';
+                e.currentTarget.style.borderColor = 'var(--brand-primary)';
+                e.currentTarget.style.color = '#38bdf8';
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.borderColor = 'var(--claude-border)';
-                e.currentTarget.style.color = 'var(--claude-text-secondary)';
+                e.currentTarget.style.borderColor = 'var(--app-border)';
+                e.currentTarget.style.color = 'var(--app-text-secondary)';
               }}
-              title="Add or manage indexed OneDrive & Google Drive files"
+              title="Browse and index OneDrive and Google Drive files"
             >
-              <FolderSync size={13} color="var(--claude-terracotta)" />
+              <FolderSync size={13} color="var(--brand-cyan)" />
               <span>Drive Knowledge Attached</span>
             </button>
 
@@ -854,15 +858,15 @@ export function ChatBox({
                   width: '32px',
                   height: '32px',
                   borderRadius: '50%',
-                  background: inputQuery.trim() ? 'var(--claude-terracotta)' : 'rgba(255, 255, 255, 0.08)',
+                  background: inputQuery.trim() ? 'var(--brand-gradient)' : 'rgba(255, 255, 255, 0.08)',
                   border: 'none',
-                  color: inputQuery.trim() ? '#ffffff' : 'var(--claude-text-muted)',
+                  color: inputQuery.trim() ? '#ffffff' : 'var(--app-text-muted)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                   cursor: inputQuery.trim() ? 'pointer' : 'default',
                   transition: 'all 0.15s ease',
-                  boxShadow: inputQuery.trim() ? '0 2px 8px var(--claude-terracotta-glow)' : 'none',
+                  boxShadow: inputQuery.trim() ? '0 2px 10px var(--brand-glow)' : 'none',
                 }}
                 title="Send query"
               >
@@ -872,16 +876,16 @@ export function ChatBox({
           </div>
         </div>
 
-        {/* Micro-disclaimer */}
+        {/* Footnote */}
         <span
           style={{
             fontSize: '0.68rem',
-            color: 'var(--claude-text-muted)',
+            color: 'var(--app-text-muted)',
             marginTop: '0.5rem',
             letterSpacing: '0.01em',
           }}
         >
-          Enterprise RAG • Verified against synced OneDrive & Google Drive sources • OpenTelemetry & Langfuse monitored
+          Enterprise Cloud RAG • Verified against synced OneDrive & Google Drive sources • OpenTelemetry & Langfuse monitored
         </span>
       </div>
     </div>

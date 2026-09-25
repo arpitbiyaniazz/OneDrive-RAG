@@ -1,41 +1,44 @@
 :root {
-  /* Claude Dark Signature Palette */
-  --claude-bg: #1e1e1c;
-  --claude-sidebar: #171715;
-  --claude-sidebar-hover: rgba(255, 255, 255, 0.05);
-  --claude-surface: #262522;
-  --claude-surface-hover: #302f2b;
-  --claude-input-bg: #272623;
-  --claude-border: rgba(255, 255, 255, 0.09);
-  --claude-border-hover: rgba(255, 255, 255, 0.18);
-  --claude-border-active: rgba(204, 120, 92, 0.5);
+  /* Enterprise Midnight Blue & Cyan Palette */
+  --app-bg: #0a0d14;
+  --app-sidebar: #0e1320;
+  --app-sidebar-hover: rgba(255, 255, 255, 0.05);
+  --app-surface: #141a29;
+  --app-surface-hover: #1b2337;
+  --app-input-bg: #111726;
+  --app-border: rgba(255, 255, 255, 0.08);
+  --app-border-hover: rgba(0, 120, 212, 0.35);
+  --app-border-active: rgba(0, 120, 212, 0.6);
 
-  --claude-text: #f5f4ef;
-  --claude-text-secondary: #c2c0b6;
-  --claude-text-muted: #8e8b82;
+  --app-text: #f0f4fc;
+  --app-text-secondary: #94a3b8;
+  --app-text-muted: #64748b;
 
-  --claude-terracotta: #cc785c;
-  --claude-terracotta-hover: #dc896d;
-  --claude-terracotta-light: #e69c83;
-  --claude-terracotta-bg: rgba(204, 120, 92, 0.12);
-  --claude-terracotta-glow: rgba(204, 120, 92, 0.25);
+  /* Signature Electric Blue / Cyan Gradient */
+  --brand-primary: #0078d4;
+  --brand-cyan: #06b6d4;
+  --brand-hover: #1084d8;
+  --brand-gradient: linear-gradient(135deg, #0078d4 0%, #06b6d4 100%);
+  --brand-bg: rgba(0, 120, 212, 0.14);
+  --brand-glow: rgba(0, 120, 212, 0.35);
+  --cyan-glow: rgba(6, 182, 212, 0.25);
 
   /* Cloud provider accents */
-  --onedrive-blue: #3b82f6;
-  --onedrive-blue-bg: rgba(59, 130, 246, 0.14);
+  --onedrive-blue: #0078d4;
+  --onedrive-blue-bg: rgba(0, 120, 212, 0.15);
   --gdrive-green: #10b981;
-  --gdrive-green-bg: rgba(16, 185, 129, 0.14);
+  --gdrive-green-bg: rgba(16, 185, 129, 0.15);
 
-  /* Legacy aliases for sub-components */
-  --bg-primary: var(--claude-bg);
-  --bg-secondary: var(--claude-sidebar);
-  --bg-tertiary: var(--claude-surface);
-  --bg-card: var(--claude-surface);
-  --bg-card-hover: var(--claude-surface-hover);
-  --border-color: var(--claude-border);
-  --text-primary: var(--claude-text);
-  --text-secondary: var(--claude-text-secondary);
-  --text-muted: var(--claude-text-muted);
+  /* Aliases for sub-components */
+  --bg-primary: var(--app-bg);
+  --bg-secondary: var(--app-sidebar);
+  --bg-tertiary: var(--app-surface);
+  --bg-card: var(--app-surface);
+  --bg-card-hover: var(--app-surface-hover);
+  --border-color: var(--app-border);
+  --text-primary: var(--app-text);
+  --text-secondary: var(--app-text-secondary);
+  --text-muted: var(--app-text-muted);
 
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -43,7 +46,7 @@
   --radius-xl: 24px;
   --radius-full: 9999px;
 
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', Menlo, monospace;
 }
 
@@ -55,8 +58,8 @@
 
 body {
   font-family: var(--font-sans);
-  background-color: var(--claude-bg);
-  color: var(--claude-text);
+  background-color: var(--app-bg);
+  color: var(--app-text);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -74,31 +77,31 @@ body {
 
 /* Glass & Card styles */
 .glass-panel {
-  background: var(--claude-surface);
-  border: 1px solid var(--claude-border);
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
   border-radius: var(--radius-lg);
 }
 
 .glass-card {
-  background: var(--claude-surface);
-  border: 1px solid var(--claude-border);
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
   border-radius: var(--radius-md);
   transition: all 0.18s ease;
 }
 
 .glass-card:hover {
-  background: var(--claude-surface-hover);
-  border-color: var(--claude-border-hover);
+  background: var(--app-surface-hover);
+  border-color: var(--app-border-hover);
 }
 
-/* Claude Buttons */
+/* Buttons */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
   font-family: var(--font-sans);
-  font-weight: 500;
+  font-weight: 600;
   font-size: 0.875rem;
   padding: 0.55rem 1rem;
   border-radius: var(--radius-md);
@@ -108,34 +111,27 @@ body {
   text-decoration: none;
 }
 
-.btn-terracotta {
-  background: var(--claude-terracotta);
-  color: #ffffff;
-}
-
-.btn-terracotta:hover:not(:disabled) {
-  background: var(--claude-terracotta-hover);
-  box-shadow: 0 4px 14px var(--claude-terracotta-glow);
-}
-
 .btn-primary {
-  background: var(--claude-terracotta);
+  background: var(--brand-gradient);
   color: #ffffff;
+  box-shadow: 0 4px 14px var(--brand-glow);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: var(--claude-terracotta-hover);
+  background: linear-gradient(135deg, #1084d8 0%, #08c0e0 100%);
+  box-shadow: 0 6px 20px var(--brand-glow);
+  transform: translateY(-1px);
 }
 
 .btn-secondary {
   background: rgba(255, 255, 255, 0.05);
-  color: var(--claude-text);
-  border: 1px solid var(--claude-border);
+  color: var(--app-text);
+  border: 1px solid var(--app-border);
 }
 
 .btn-secondary:hover {
   background: rgba(255, 255, 255, 0.09);
-  border-color: var(--claude-border-hover);
+  border-color: var(--app-border-hover);
 }
 
 /* Badges */
@@ -184,9 +180,9 @@ body {
   background: rgba(255, 255, 255, 0.22);
 }
 
-/* Markdown styling inside Claude assistant messages */
+/* Markdown styling inside assistant messages */
 .prose {
-  color: var(--claude-text);
+  color: var(--app-text);
   font-size: 0.95rem;
   line-height: 1.68;
 }
@@ -201,7 +197,7 @@ body {
 
 .prose h1, .prose h2, .prose h3, .prose h4 {
   color: #ffffff;
-  font-weight: 600;
+  font-weight: 700;
   margin-top: 1.25rem;
   margin-bottom: 0.6rem;
   line-height: 1.3;
@@ -223,15 +219,16 @@ body {
 .prose code {
   font-family: var(--font-mono);
   font-size: 0.85em;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(0, 120, 212, 0.12);
+  border: 1px solid rgba(0, 120, 212, 0.25);
   padding: 0.15rem 0.4rem;
   border-radius: 4px;
-  color: #e69c83;
+  color: #67e8f9;
 }
 
 .prose pre {
-  background: #141412;
-  border: 1px solid var(--claude-border);
+  background: #080c14;
+  border: 1px solid var(--app-border);
   border-radius: var(--radius-md);
   padding: 1rem;
   overflow-x: auto;
@@ -240,15 +237,16 @@ body {
 
 .prose pre code {
   background: transparent;
+  border: none;
   padding: 0;
-  color: #e2e0d8;
+  color: #e2e8f0;
   font-size: 0.82rem;
 }
 
 .prose blockquote {
-  border-left: 3px solid var(--claude-terracotta);
+  border-left: 3px solid var(--brand-primary);
   padding-left: 0.85rem;
-  color: var(--claude-text-secondary);
+  color: var(--app-text-secondary);
   margin: 0.85rem 0;
   font-style: italic;
 }
@@ -261,7 +259,7 @@ body {
 }
 
 .prose th, .prose td {
-  border: 1px solid var(--claude-border);
+  border: 1px solid var(--app-border);
   padding: 0.5rem 0.75rem;
   text-align: left;
 }
