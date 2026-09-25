@@ -25,8 +25,11 @@ export interface UserProfile {
   full_name?: string;
   is_active?: boolean;
   onedrive_connected?: boolean;
+  gdrive_connected?: boolean;
   sandbox_mode?: boolean;
 }
+
+export type DriveType = 'onedrive' | 'google_drive';
 
 export interface OneDriveItem {
   id: string;
@@ -37,13 +40,17 @@ export interface OneDriveItem {
   modified_date?: string;
   web_url?: string;
   path: string;
+  drive_type?: DriveType;
   children?: OneDriveItem[];
 }
+
+export type CloudItem = OneDriveItem;
 
 export interface DocumentRecord {
   id: string;
   filename: string;
   file_type: string;
+  drive_type?: DriveType;
   folder_path: string;
   file_size: number;
   modified_date: string;
@@ -57,6 +64,7 @@ export interface Citation {
   filename: string;
   page?: number;
   section?: string;
+  drive_type?: DriveType;
   onedrive_url?: string;
 }
 

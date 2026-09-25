@@ -14,7 +14,7 @@ import {
   LogOut,
 } from 'lucide-react';
 import { HealthStatus, TelemetryStatus, OneDriveItem, UserProfile } from './types';
-import { fetchHealth, fetchTelemetryStatus, fetchCurrentUser, logoutUser, exchangeAuthCode } from './services/api';
+import { fetchHealth, fetchTelemetryStatus, fetchCurrentUser, logoutUser, exchangeAuthCode, exchangeGoogleAuthCode } from './services/api';
 import { FolderTree } from './components/OneDrive/FolderTree';
 import { IngestionModal } from './components/OneDrive/IngestionModal';
 import { ChatBox } from './components/Chat/ChatBox';
@@ -44,7 +44,15 @@ export function App() {
 
         if (code) {
           try {
-            const authRes = await exchangeAuthCode(code, state);
+            const isGoogle =
+              window.location.pathname.includes('google') ||
+              code.startsWith('mock_google') ||
+              (params.get('scope') && params.get('scope')!.includes('google'));
+
+            const authRes = isGoogle
+              ? await exchangeGoogleAuthCode(code, state)
+              : await exchangeAuthCode(code, state);
+
             setCurrentUser(authRes.user);
             window.history.replaceState({}, document.title, window.location.pathname);
           } catch (e) {
@@ -139,10 +147,10 @@ export function App() {
             </div>
             <div>
               <h1 style={{ fontSize: '1.15rem', fontWeight: 700, letterSpacing: '-0.02em' }}>
-                OneDrive RAG Assistant
+                Enterprise Cloud RAG
               </h1>
               <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                Metadata-Aware Enterprise Intelligence
+                OneDrive & Google Drive Intelligence Platform
               </span>
             </div>
           </div>
@@ -244,7 +252,7 @@ export function App() {
         <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '2rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem' }}>
           {[
             { id: 'overview', label: 'System Overview & Telemetry', icon: Layers },
-            { id: 'onedrive', label: 'OneDrive Browser', icon: FolderSync },
+            { id: 'onedrive', label: 'Cloud Drive Explorer', icon: FolderSync },
             { id: 'knowledge', label: 'Knowledge Base', icon: Database },
             { id: 'chat', label: 'Grounded Chat', icon: Bot },
           ].map((tab) => {

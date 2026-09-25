@@ -41,13 +41,20 @@ class GroundedRAGService:
             key = (chunk.filename, chunk.page_number, chunk.section)
             if key not in seen:
                 seen.add(key)
+                drive_type = getattr(chunk, "drive_type", "onedrive")
+                fallback_url = (
+                    f"https://drive.google.com/file/d/{chunk.filename}/view"
+                    if drive_type == "google_drive"
+                    else f"https://onedrive.live.com/view.aspx?file={chunk.filename}"
+                )
                 citations.append({
                     "source_id": idx,
                     "filename": chunk.filename,
                     "page": chunk.page_number,
                     "section": chunk.section,
                     "folder_path": chunk.folder_path,
-                    "onedrive_url": chunk.onedrive_url or f"https://onedrive.live.com/view.aspx?file={chunk.filename}",
+                    "drive_type": drive_type,
+                    "onedrive_url": chunk.onedrive_url or fallback_url,
                     "similarity_score": chunk.similarity_score,
                 })
         return citations

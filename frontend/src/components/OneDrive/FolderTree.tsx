@@ -15,7 +15,7 @@ import {
   RefreshCw,
   Sparkles,
 } from 'lucide-react';
-import { OneDriveItem } from '../../types';
+import { OneDriveItem, DriveType } from '../../types';
 
 interface FolderTreeProps {
   onIndexSelection: (selectedIds: string[], selectedItems: OneDriveItem[]) => void;
@@ -23,24 +23,28 @@ interface FolderTreeProps {
 }
 
 export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeProps) {
+  const [driveType, setDriveType] = useState<DriveType>('onedrive');
   const [items, setItems] = useState<OneDriveItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
     folder_hr: true,
     folder_finance: true,
     folder_engineering: true,
+    gdrive_folder_corporate: true,
+    gdrive_folder_tech: true,
   });
   const [selectedIds, setSelectedIds] = useState<Record<string, boolean>>({});
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   useEffect(() => {
-    fetchTree();
-  }, []);
+    fetchTree(driveType);
+  }, [driveType]);
 
-  async function fetchTree() {
+  async function fetchTree(targetDrive: DriveType = driveType) {
     setLoading(true);
     try {
-      const res = await fetch('/api/onedrive/tree');
+      const endpoint = targetDrive === 'google_drive' ? '/api/gdrive/tree' : '/api/onedrive/tree';
+      const res = await fetch(endpoint);
       if (res.ok) {
         const data = await res.json();
         setItems(data.items || []);
@@ -57,7 +61,7 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
         setSelectedIds(initialSelected);
       }
     } catch (e) {
-      console.error('Failed to fetch OneDrive tree', e);
+      console.error(`Failed to fetch ${targetDrive} tree`, e);
     } finally {
       setLoading(false);
     }
@@ -114,12 +118,15 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
         return <FileText size={16} color="#f43f5e" />;
       case 'docx':
       case 'doc':
+      case 'gdoc':
         return <FileText size={16} color="#3b82f6" />;
       case 'xlsx':
       case 'xls':
+      case 'gsheet':
         return <FileSpreadsheet size={16} color="#10b981" />;
       case 'pptx':
       case 'ppt':
+      case 'gslides':
         return <Presentation size={16} color="#f59e0b" />;
       default:
         return <FileText size={16} color="#a855f7" />;
@@ -233,6 +240,90 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
 
   return (
     <div className="glass-panel" style={{ padding: '1.75rem' }}>
+      {/* Cloud Storage Provider Switcher */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '1rem',
+          paddingBottom: '1.25rem',
+          marginBottom: '1.25rem',
+          borderBottom: '1px solid var(--border-color)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+          <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+            Active Cloud Storage:
+          </span>
+          <div
+            style={{
+              display: 'inline-flex',
+              padding: '3px',
+              background: 'rgba(15, 23, 42, 0.7)',
+              borderRadius: 'var(--radius-md)',
+              border: '1px solid var(--border-color)',
+            }}
+          >
+            <button
+              onClick={() => setDriveType('onedrive')}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.45rem',
+                padding: '0.45rem 0.9rem',
+                borderRadius: 'var(--radius-sm)',
+                border: 'none',
+                background: driveType === 'onedrive' ? 'linear-gradient(135deg, #0078D4 0%, #005A9E 100%)' : 'transparent',
+                color: driveType === 'onedrive' ? '#ffffff' : 'var(--text-secondary)',
+                fontWeight: 600,
+                fontSize: '0.8rem',
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 21 21" fill="none">
+                <rect x="1" y="1" width="9" height="9" fill="#f25022" />
+                <rect x="11" y="1" width="9" height="9" fill="#7fba00" />
+                <rect x="1" y="11" width="9" height="9" fill="#00a4ef" />
+                <rect x="11" y="11" width="9" height="9" fill="#ffb900" />
+              </svg>
+              Microsoft OneDrive
+            </button>
+            <button
+              onClick={() => setDriveType('google_drive')}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.45rem',
+                padding: '0.45rem 0.9rem',
+                borderRadius: 'var(--radius-sm)',
+                border: 'none',
+                background: driveType === 'google_drive' ? 'linear-gradient(135deg, #0f9d58 0%, #0b8043 100%)' : 'transparent',
+                color: driveType === 'google_drive' ? '#ffffff' : 'var(--text-secondary)',
+                fontWeight: 600,
+                fontSize: '0.8rem',
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+              </svg>
+              Google Drive
+            </button>
+          </div>
+        </div>
+
+        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+          Browsing {driveType === 'google_drive' ? 'Google Shared Drive' : 'OneDrive Root'} &bull; Delta Change Detection Active
+        </span>
+      </div>
+
       {/* Top Search & Actions Bar */}
       <div
         style={{
@@ -267,9 +358,9 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <button
             className="btn btn-secondary"
-            onClick={fetchTree}
+            onClick={() => fetchTree()}
             disabled={loading}
-            title="Refresh OneDrive items"
+            title="Refresh cloud items"
           >
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh
           </button>

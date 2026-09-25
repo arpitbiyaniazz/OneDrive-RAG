@@ -14,6 +14,7 @@ async def health_check():
         "version": settings.VERSION,
         "environment": settings.ENVIRONMENT,
         "mock_onedrive_mode": settings.DEV_MOCK_ONEDRIVE,
+        "mock_gdrive_mode": settings.DEV_MOCK_GDRIVE,
     }
 
 

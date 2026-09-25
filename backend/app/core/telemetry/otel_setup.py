@@ -184,3 +184,37 @@ def trace_onedrive_call(operation: str, resource_path: str = ""):
                 self.span.end()
 
     return OneDriveSpanContext()
+
+
+def trace_gdrive_call(operation: str, resource_path: str = ""):
+    """
+    Context manager to record Google Drive API call latencies, resource IDs, and statuses.
+    """
+    class GDriveSpanContext:
+        def __enter__(self):
+            tracer = get_tracer("gdrive-tracer")
+            self.span = None
+            if tracer:
+                self.span = tracer.start_span(
+                    f"gdrive.{operation}",
+                    attributes={
+                        "gdrive.operation": operation,
+                        "gdrive.resource": resource_path,
+                    }
+                )
+                self.start_time = time.perf_counter()
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            if self.span:
+                duration_ms = (time.perf_counter() - self.start_time) * 1000
+                self.span.set_attribute("gdrive.latency_ms", duration_ms)
+                if exc_val:
+                    self.span.record_exception(exc_val)
+                    self.span.set_status(Status(StatusCode.ERROR, str(exc_val)))
+                else:
+                    self.span.set_status(Status(StatusCode.OK))
+                self.span.end()
+
+    return GDriveSpanContext()
+

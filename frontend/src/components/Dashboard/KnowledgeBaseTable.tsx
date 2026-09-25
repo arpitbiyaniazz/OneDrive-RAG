@@ -20,6 +20,7 @@ export function KnowledgeBaseTable() {
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [search, setSearch] = useState<string>('');
   const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [cloudFilter, setCloudFilter] = useState<string>('all');
 
   useEffect(() => {
     loadData();
@@ -82,12 +83,15 @@ export function KnowledgeBaseTable() {
         return <FileText size={16} color="#f43f5e" />;
       case 'docx':
       case 'doc':
+      case 'gdoc':
         return <FileText size={16} color="#3b82f6" />;
       case 'xlsx':
       case 'xls':
+      case 'gsheet':
         return <FileSpreadsheet size={16} color="#10b981" />;
       case 'pptx':
       case 'ppt':
+      case 'gslides':
         return <Presentation size={16} color="#f59e0b" />;
       default:
         return <FileText size={16} color="#a855f7" />;
@@ -99,7 +103,8 @@ export function KnowledgeBaseTable() {
       d.filename.toLowerCase().includes(search.toLowerCase()) ||
       d.folder_path.toLowerCase().includes(search.toLowerCase());
     const matchesType = typeFilter === 'all' || d.file_type.toLowerCase() === typeFilter.toLowerCase();
-    return matchesSearch && matchesType;
+    const matchesCloud = cloudFilter === 'all' || (d.drive_type || 'onedrive') === cloudFilter;
+    return matchesSearch && matchesType && matchesCloud;
   });
 
   return (
@@ -184,10 +189,31 @@ export function KnowledgeBaseTable() {
               >
                 <option value="all">All File Formats</option>
                 <option value="pdf">PDF Documents</option>
-                <option value="docx">Word (.docx)</option>
-                <option value="xlsx">Excel (.xlsx)</option>
-                <option value="pptx">PowerPoint (.pptx)</option>
+                <option value="docx">Word (.docx / .gdoc)</option>
+                <option value="xlsx">Excel (.xlsx / .gsheet)</option>
+                <option value="pptx">PowerPoint (.pptx / .gslides)</option>
                 <option value="txt">Text (.txt)</option>
+              </select>
+            </div>
+
+            {/* Cloud Storage Provider Filter */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <select
+                value={cloudFilter}
+                onChange={(e) => setCloudFilter(e.target.value)}
+                style={{
+                  padding: '0.55rem 0.75rem',
+                  borderRadius: 'var(--radius-md)',
+                  background: 'rgba(15, 23, 42, 0.6)',
+                  border: '1px solid var(--border-color)',
+                  color: 'var(--text-primary)',
+                  fontSize: '0.8125rem',
+                  outline: 'none',
+                }}
+              >
+                <option value="all">All Cloud Storage</option>
+                <option value="onedrive">OneDrive</option>
+                <option value="google_drive">Google Drive</option>
               </select>
             </div>
 
@@ -202,7 +228,7 @@ export function KnowledgeBaseTable() {
               style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
             >
               <FolderSync size={14} className={syncing ? 'animate-spin' : ''} />
-              {syncing ? 'Syncing...' : 'Sync OneDrive'}
+              {syncing ? 'Syncing...' : 'Delta Sync All'}
             </button>
           </div>
         </div>
@@ -246,64 +272,107 @@ export function KnowledgeBaseTable() {
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>
                 <th style={{ padding: '0.75rem 1rem' }}>Filename</th>
+                <th style={{ padding: '0.75rem 1rem' }}>Storage Source</th>
                 <th style={{ padding: '0.75rem 1rem' }}>Folder Path</th>
                 <th style={{ padding: '0.75rem 1rem' }}>Type</th>
                 <th style={{ padding: '0.75rem 1rem' }}>Size</th>
                 <th style={{ padding: '0.75rem 1rem' }}>Status</th>
-                <th style={{ padding: '0.75rem 1rem', textAlign: 'right' }}>OneDrive Action</th>
+                <th style={{ padding: '0.75rem 1rem', textAlign: 'right' }}>Cloud Action</th>
               </tr>
             </thead>
             <tbody>
               {filteredDocs.length === 0 ? (
                 <tr>
-                  <td colSpan={6} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-                    No indexed documents match your query. Go to the OneDrive browser to index folders.
+                  <td colSpan={7} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
+                    No indexed documents match your query. Go to the Cloud Drive browser to index files.
                   </td>
                 </tr>
               ) : (
-                filteredDocs.map((doc) => (
-                  <tr
-                    key={doc.id}
-                    style={{
-                      borderBottom: '1px solid var(--border-color)',
-                      transition: 'background 0.15s ease',
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.02)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-                  >
-                    <td style={{ padding: '0.85rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600 }}>
-                      {renderFileIcon(doc.file_type)}
-                      <span>{doc.filename}</span>
-                    </td>
-                    <td style={{ padding: '0.85rem 1rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', fontSize: '0.8125rem' }}>
-                      {doc.folder_path}
-                    </td>
-                    <td style={{ padding: '0.85rem 1rem' }}>
-                      <span className="badge badge-info" style={{ textTransform: 'uppercase' }}>
-                        {doc.file_type}
-                      </span>
-                    </td>
-                    <td style={{ padding: '0.85rem 1rem', color: 'var(--text-muted)' }}>
-                      {formatBytes(doc.file_size)}
-                    </td>
-                    <td style={{ padding: '0.85rem 1rem' }}>
-                      <span className="badge badge-success">
-                        {doc.status}
-                      </span>
-                    </td>
-                    <td style={{ padding: '0.85rem 1rem', textAlign: 'right' }}>
-                      <a
-                        href={doc.onedrive_url || '#'}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="btn btn-secondary"
-                        style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }}
-                      >
-                        <ExternalLink size={12} /> View in OneDrive
-                      </a>
-                    </td>
-                  </tr>
-                ))
+                filteredDocs.map((doc) => {
+                  const isGDrive = doc.drive_type === 'google_drive';
+                  return (
+                    <tr
+                      key={doc.id}
+                      style={{
+                        borderBottom: '1px solid var(--border-color)',
+                        transition: 'background 0.15s ease',
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.02)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                    >
+                      <td style={{ padding: '0.85rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600 }}>
+                        {renderFileIcon(doc.file_type)}
+                        <span>{doc.filename}</span>
+                      </td>
+                      <td style={{ padding: '0.85rem 1rem' }}>
+                        {isGDrive ? (
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '0.35rem',
+                              padding: '0.2rem 0.65rem',
+                              borderRadius: '9999px',
+                              background: 'rgba(16, 185, 129, 0.15)',
+                              border: '1px solid rgba(16, 185, 129, 0.3)',
+                              color: '#34d399',
+                              fontSize: '0.725rem',
+                              fontWeight: 600,
+                            }}
+                          >
+                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#34d399' }} />
+                            Google Drive
+                          </span>
+                        ) : (
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '0.35rem',
+                              padding: '0.2rem 0.65rem',
+                              borderRadius: '9999px',
+                              background: 'rgba(0, 120, 212, 0.15)',
+                              border: '1px solid rgba(0, 120, 212, 0.3)',
+                              color: '#60a5fa',
+                              fontSize: '0.725rem',
+                              fontWeight: 600,
+                            }}
+                          >
+                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#60a5fa' }} />
+                            OneDrive
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ padding: '0.85rem 1rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', fontSize: '0.8125rem' }}>
+                        {doc.folder_path}
+                      </td>
+                      <td style={{ padding: '0.85rem 1rem' }}>
+                        <span className="badge badge-info" style={{ textTransform: 'uppercase' }}>
+                          {doc.file_type}
+                        </span>
+                      </td>
+                      <td style={{ padding: '0.85rem 1rem', color: 'var(--text-muted)' }}>
+                        {formatBytes(doc.file_size)}
+                      </td>
+                      <td style={{ padding: '0.85rem 1rem' }}>
+                        <span className="badge badge-success">
+                          {doc.status}
+                        </span>
+                      </td>
+                      <td style={{ padding: '0.85rem 1rem', textAlign: 'right' }}>
+                        <a
+                          href={doc.onedrive_url || '#'}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="btn btn-secondary"
+                          style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }}
+                        >
+                          <ExternalLink size={12} /> {isGDrive ? 'View in Drive' : 'View in OneDrive'}
+                        </a>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>

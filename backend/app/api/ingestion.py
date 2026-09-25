@@ -92,17 +92,20 @@ async def get_ingestion_status(
 async def list_documents(
     folder_path: Optional[str] = Query(None),
     file_type: Optional[str] = Query(None),
+    drive_type: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Lists all indexed documents for the authenticated user with optional folder or type filters.
+    Lists all indexed documents for the authenticated user with optional folder, type, or drive_type filters.
     """
     stmt = select(Document).where(Document.user_id == current_user.id)
     if folder_path:
         stmt = stmt.where(Document.folder_path.ilike(f"{folder_path}%"))
     if file_type:
         stmt = stmt.where(Document.file_type == file_type.lower())
+    if drive_type:
+        stmt = stmt.where(Document.drive_type == drive_type.lower())
 
     stmt = stmt.order_by(Document.created_at.desc())
     res = await db.execute(stmt)
@@ -114,6 +117,7 @@ async def list_documents(
                 "id": d.id,
                 "filename": d.filename,
                 "file_type": d.file_type,
+                "drive_type": d.drive_type or "onedrive",
                 "folder_path": d.folder_path,
                 "file_size": d.file_size,
                 "modified_date": d.modified_date.isoformat() if d.modified_date else None,

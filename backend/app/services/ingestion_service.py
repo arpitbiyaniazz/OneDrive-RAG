@@ -15,6 +15,7 @@ from app.processors.factory import DocumentParserFactory
 from app.services.chunker import StructureAwareChunker
 from app.services.embedding_service import get_embedding_provider
 from app.services.microsoft_graph import get_onedrive_service, mock_onedrive_provider
+from app.services.google_drive import get_google_drive_service, mock_google_drive_provider
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -68,12 +69,24 @@ class IngestionService:
             try:
                 # 1. Fetch item metadata & file bytes
                 item_meta = None
-                if settings.DEV_MOCK_ONEDRIVE:
-                    item_meta = await mock_onedrive_provider.get_item_by_id(item_id)
-                    file_bytes = await mock_onedrive_provider.download_file_bytes(item_id)
+                is_gdrive = item_id.startswith("gdrive_") or item_id.startswith("file_gdrive_")
+
+                if is_gdrive:
+                    gdrive_service = get_google_drive_service()
+                    if settings.DEV_MOCK_GDRIVE:
+                        item_meta = await mock_google_drive_provider.get_item_by_id(item_id)
+                        file_bytes = await mock_google_drive_provider.download_file_bytes(
+                            item_id, item_meta.get("mime_type", "") if item_meta else ""
+                        )
+                    else:
+                        item_meta = await gdrive_service.get_file_metadata("", item_id)
+                        file_bytes = await gdrive_service.download_file_bytes("", item_id, item_meta.get("mimeType", ""))
                 else:
-                    # Graph API implementation
-                    file_bytes = await service.download_file_bytes("", item_id)
+                    if settings.DEV_MOCK_ONEDRIVE:
+                        item_meta = await mock_onedrive_provider.get_item_by_id(item_id)
+                        file_bytes = await mock_onedrive_provider.download_file_bytes(item_id)
+                    else:
+                        file_bytes = await service.download_file_bytes("", item_id)
 
                 if not item_meta:
                     item_meta = {
@@ -91,6 +104,7 @@ class IngestionService:
                 folder_path = item_meta.get("path", "/")
                 file_size = item_meta.get("size", len(file_bytes))
                 web_url = item_meta.get("web_url", "")
+                drive_type = "google_drive" if is_gdrive else "onedrive"
                 ext = filename.split(".")[-1].lower() if "." in filename else "txt"
 
                 # 2. Compute SHA-256 content hash
@@ -124,6 +138,7 @@ class IngestionService:
                         "folder_path": folder_path,
                         "onedrive_url": web_url,
                         "onedrive_file_id": item_id,
+                        "drive_type": drive_type,
                     }
                     chunks = self.chunker.chunk_document(parsed_doc, doc_meta_payload)
 
@@ -144,6 +159,7 @@ class IngestionService:
                         doc.mime_type = mime_type
                         doc.file_size = file_size
                         doc.onedrive_url = web_url
+                        doc.drive_type = drive_type
                         doc.content_hash = content_hash
                         doc.last_ingested_at = datetime.now(timezone.utc)
                         doc.status = "INDEXED"
@@ -151,6 +167,7 @@ class IngestionService:
                         doc = Document(
                             user_id=user_id,
                             onedrive_file_id=item_id,
+                            drive_type=drive_type,
                             filename=filename,
                             file_type=ext,
                             folder_path=folder_path,

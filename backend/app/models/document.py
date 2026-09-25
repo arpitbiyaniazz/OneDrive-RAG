@@ -16,6 +16,7 @@ class Document(Base):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     onedrive_file_id = Column(String(255), nullable=False, index=True)
+    drive_type = Column(String(50), default="onedrive", nullable=False, index=True)  # onedrive or google_drive
     filename = Column(String(255), nullable=False, index=True)
     file_type = Column(String(50), nullable=False, index=True)  # pdf, docx, txt, xlsx, pptx
     folder_id = Column(String(255), nullable=True)

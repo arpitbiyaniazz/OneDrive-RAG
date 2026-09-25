@@ -20,6 +20,14 @@ async def init_db():
 
         # Create all tables
         await conn.run_sync(Base.metadata.create_all)
+        
+        # Schema migration check for Google Drive fields
+        try:
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id VARCHAR(255);"))
+            await conn.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS drive_type VARCHAR(50) DEFAULT 'onedrive';"))
+        except Exception as e:
+            logger.warning(f"Note on schema migration: {e}")
+            
         logger.info("Database tables verified/created successfully.")
 
 

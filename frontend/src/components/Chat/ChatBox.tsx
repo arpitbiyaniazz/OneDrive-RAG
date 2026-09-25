@@ -322,37 +322,43 @@ export function ChatBox() {
                           marginBottom: '0.5rem',
                         }}
                       >
-                        Verified OneDrive Sources:
+                        Verified Sources (OneDrive & Google Drive):
                       </span>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                        {msg.citations.map((cite) => (
-                          <a
-                            key={cite.source_id}
-                            href={cite.onedrive_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '0.4rem',
-                              padding: '0.35rem 0.65rem',
-                              background: 'rgba(0, 120, 212, 0.12)',
-                              border: '1px solid rgba(0, 120, 212, 0.3)',
-                              borderRadius: 'var(--radius-sm)',
-                              color: '#93c5fd',
-                              fontSize: '0.75rem',
-                              fontWeight: 600,
-                              textDecoration: 'none',
-                              transition: 'all 0.15s ease',
-                            }}
-                          >
-                            <FileText size={12} />
-                            [{cite.source_id}] {cite.filename}
-                            {cite.page && ` • P.${cite.page}`}
-                            {cite.section && ` • ${cite.section}`}
-                            <ExternalLink size={10} />
-                          </a>
-                        ))}
+                        {msg.citations.map((cite) => {
+                          const isGDrive = cite.drive_type === 'google_drive';
+                          return (
+                            <a
+                              key={cite.source_id}
+                              href={cite.onedrive_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.4rem',
+                                padding: '0.35rem 0.65rem',
+                                background: isGDrive ? 'rgba(16, 185, 129, 0.12)' : 'rgba(0, 120, 212, 0.12)',
+                                border: isGDrive ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(0, 120, 212, 0.3)',
+                                borderRadius: 'var(--radius-sm)',
+                                color: isGDrive ? '#6ee7b7' : '#93c5fd',
+                                fontSize: '0.75rem',
+                                fontWeight: 600,
+                                textDecoration: 'none',
+                                transition: 'all 0.15s ease',
+                              }}
+                            >
+                              <FileText size={12} />
+                              <span style={{ opacity: 0.85, fontSize: '0.675rem', textTransform: 'uppercase' }}>
+                                {isGDrive ? 'G-Drive' : 'OneDrive'}
+                              </span>
+                              [{cite.source_id}] {cite.filename}
+                              {cite.page && ` • P.${cite.page}`}
+                              {cite.section && ` • ${cite.section}`}
+                              <ExternalLink size={10} />
+                            </a>
+                          );
+                        })}
                       </div>
                     </div>
                   )}

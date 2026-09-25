@@ -22,6 +22,7 @@ class RetrievedChunk:
     content: str
     similarity_score: float
     metadata: Dict[str, Any]
+    drive_type: str = "onedrive"
 
 
 class RetrievalService:
@@ -49,6 +50,7 @@ class RetrievalService:
                     Document.filename,
                     Document.folder_path,
                     Document.onedrive_url,
+                    Document.drive_type,
                     DocumentChunk.embedding.cosine_distance(query_vector).label("distance"),
                 )
                 .join(Document, DocumentChunk.document_id == Document.id)
@@ -71,7 +73,7 @@ class RetrievalService:
 
             results: List[RetrievedChunk] = []
             for row in rows:
-                chunk, filename, folder_path, onedrive_url, distance = row
+                chunk, filename, folder_path, onedrive_url, drive_type, distance = row
                 # Convert cosine distance to similarity score: 1 - distance
                 sim_score = max(0.0, min(1.0, 1.0 - float(distance))) if distance is not None else 0.5
                 results.append(
@@ -86,6 +88,7 @@ class RetrievalService:
                         content=chunk.content,
                         similarity_score=round(sim_score, 4),
                         metadata=chunk.metadata_json or {},
+                        drive_type=drive_type or "onedrive",
                     )
                 )
             return results

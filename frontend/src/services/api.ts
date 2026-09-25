@@ -1,4 +1,4 @@
-import { HealthStatus, TelemetryStatus, UserProfile } from '../types';
+import { HealthStatus, TelemetryStatus, UserProfile, OneDriveItem } from '../types';
 
 const API_BASE = '/api';
 
@@ -59,9 +59,58 @@ export async function loginSandboxDemo(): Promise<{ token: string; user: UserPro
   return exchangeAuthCode('mock_dev_code_123');
 }
 
+export async function fetchGoogleLoginUrl(): Promise<string> {
+  const res = await fetch(`${API_BASE}/auth/google/login`);
+  if (!res.ok) {
+    throw new Error('Failed to retrieve Google login URL');
+  }
+  const data = await res.json();
+  return data.auth_url;
+}
+
+export async function exchangeGoogleAuthCode(code: string, state?: string): Promise<{ token: string; user: UserProfile }> {
+  const params = new URLSearchParams({ code });
+  if (state) params.set('state', state);
+  const res = await fetch(`${API_BASE}/auth/google/callback?${params.toString()}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Failed to exchange Google authorization code' }));
+    throw new Error(err.detail || 'Google OAuth exchange failed');
+  }
+  const data = await res.json();
+  if (data.token) {
+    localStorage.setItem('onedrive_rag_token', data.token);
+  }
+  return data;
+}
+
+export async function fetchGoogleDriveTree(): Promise<{ items: OneDriveItem[] }> {
+  const token = localStorage.getItem('onedrive_rag_token');
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/gdrive/tree`, { headers });
+  if (!res.ok) {
+    throw new Error('Failed to load Google Drive hierarchy');
+  }
+  return res.json();
+}
+
+export async function fetchGoogleDriveFolderItems(folderId: string): Promise<{ items: OneDriveItem[] }> {
+  const token = localStorage.getItem('onedrive_rag_token');
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/gdrive/folders/${folderId}/items`, { headers });
+  if (!res.ok) {
+    throw new Error('Failed to load Google Drive folder items');
+  }
+  return res.json();
+}
+
 export async function logoutUser(): Promise<void> {
   localStorage.removeItem('onedrive_rag_token');
   localStorage.removeItem('onedrive_rag_demo_session');
   await fetch(`${API_BASE}/auth/logout`, { method: 'POST' }).catch(() => {});
 }
+
 

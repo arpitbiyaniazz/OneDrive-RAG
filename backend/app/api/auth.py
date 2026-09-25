@@ -10,8 +10,9 @@ from app.core.security import create_access_token, decode_access_token, encrypt_
 from app.db.database import get_db
 from app.models.user import OAuthAccount, User
 from app.services.microsoft_graph import graph_service
+from app.services.google_drive import google_drive_service
 
-router = APIRouter(prefix="/auth", tags=["Authentication & Microsoft OAuth"])
+router = APIRouter(prefix="/auth", tags=["Authentication & Cloud OAuth"])
 security = HTTPBearer(auto_error=False)
 
 
@@ -182,19 +183,140 @@ async def oauth_callback(
         raise HTTPException(status_code=400, detail=f"Authentication failed: {str(e)}")
 
 
+@router.get("/google/login")
+async def login_with_google(redirect_uri: Optional[str] = None):
+    """
+    Returns the Google OAuth 2.0 authorization URL or instant dev session URL.
+    """
+    redirect = redirect_uri or settings.GOOGLE_REDIRECT_URI
+    state = str(uuid.uuid4())
+
+    if settings.DEV_MOCK_GDRIVE:
+        return {
+            "auth_url": f"{redirect}?code=mock_google_code_123&state={state}",
+            "mode": "mock",
+            "message": "Development Google Sandbox Mode active. Automatic authorization enabled.",
+        }
+
+    auth_url = google_drive_service.get_auth_url(redirect_uri=redirect, state=state)
+    return {"auth_url": auth_url, "mode": "production"}
+
+
+@router.get("/google/callback")
+async def google_oauth_callback(
+    code: str = Query(...),
+    state: Optional[str] = Query(None),
+    redirect_uri: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Exchanges Google auth code for tokens, creates/updates user, and returns JWT session.
+    """
+    redirect = redirect_uri or settings.GOOGLE_REDIRECT_URI
+
+    if settings.DEV_MOCK_GDRIVE or code.startswith("mock_"):
+        stmt = select(User).where(User.email == "demo@contoso.com")
+        res = await db.execute(stmt)
+        user = res.scalar_one_or_none()
+        if not user:
+            user = User(
+                email="demo@contoso.com",
+                full_name="Demo Enterprise User",
+                google_id="g_demo_user_123",
+            )
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+
+        session_token = create_access_token(user.id, {"email": user.email, "name": user.full_name})
+        return {
+            "token": session_token,
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "full_name": user.full_name,
+            },
+            "connected_to_gdrive": True,
+        }
+
+    try:
+        tokens = await google_drive_service.exchange_code(code=code, redirect_uri=redirect)
+        access_token = tokens["access_token"]
+        refresh_token = tokens.get("refresh_token", "")
+        profile = await google_drive_service.get_user_profile(access_token)
+
+        email = profile.get("email")
+        full_name = profile.get("name", "")
+        google_id = profile.get("id")
+
+        stmt = select(User).where(User.google_id == google_id)
+        res = await db.execute(stmt)
+        user = res.scalar_one_or_none()
+
+        if not user:
+            stmt = select(User).where(User.email == email)
+            res = await db.execute(stmt)
+            user = res.scalar_one_or_none()
+
+        if not user:
+            user = User(email=email, full_name=full_name, google_id=google_id)
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+        else:
+            user.full_name = full_name or user.full_name
+            user.google_id = google_id
+
+        # Save / Update encrypted tokens
+        stmt = select(OAuthAccount).where(OAuthAccount.user_id == user.id, OAuthAccount.provider == "google")
+        res = await db.execute(stmt)
+        oauth_acc = res.scalar_one_or_none()
+        if not oauth_acc:
+            oauth_acc = OAuthAccount(
+                user_id=user.id,
+                provider="google",
+                encrypted_access_token=encrypt_token(access_token),
+                encrypted_refresh_token=encrypt_token(refresh_token) if refresh_token else None,
+                token_type=tokens.get("token_type", "Bearer"),
+                scope=tokens.get("scope"),
+            )
+            db.add(oauth_acc)
+        else:
+            oauth_acc.encrypted_access_token = encrypt_token(access_token)
+            if refresh_token:
+                oauth_acc.encrypted_refresh_token = encrypt_token(refresh_token)
+
+        await db.commit()
+
+        session_token = create_access_token(user.id, {"email": user.email, "name": user.full_name})
+        return {
+            "token": session_token,
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "full_name": user.full_name,
+            },
+            "connected_to_gdrive": True,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Google authentication failed: {str(e)}")
+
+
 @router.get("/me")
 async def get_my_profile(current_user: User = Depends(get_current_user)):
-    """Returns the authenticated user and their OneDrive connection status."""
+    """Returns the authenticated user and their cloud storage connection status."""
     return {
         "id": current_user.id,
         "email": current_user.email,
         "full_name": current_user.full_name,
         "is_active": current_user.is_active,
         "onedrive_connected": True,
-        "sandbox_mode": settings.DEV_MOCK_ONEDRIVE,
+        "gdrive_connected": True,
+        "sandbox_mode": settings.DEV_MOCK_ONEDRIVE or settings.DEV_MOCK_GDRIVE,
     }
 
 
 @router.post("/logout")
 async def logout():
     return {"status": "success", "message": "Successfully logged out."}
+

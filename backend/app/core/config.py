@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     DEV_MOCK_ONEDRIVE: bool = True
     WEBHOOK_CLIENT_STATE: str = "onedrive-rag-webhook-secret-token"
 
+    # Google Drive / OAuth 2.0
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GOOGLE_REDIRECT_URI: str = "http://localhost:5173/auth/google/callback"
+    DEV_MOCK_GDRIVE: bool = True
+    GOOGLE_WEBHOOK_SECRET: str = "gdrive-rag-webhook-secret-token"
+
+
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/onedrive_rag"
     DATABASE_URL_SYNC: str = "postgresql://postgres:postgres@localhost:5432/onedrive_rag"

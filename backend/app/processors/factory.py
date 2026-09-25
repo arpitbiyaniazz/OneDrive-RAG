@@ -15,10 +15,13 @@ class DocumentParserFactory:
         "pdf": PDFParser,
         "docx": DOCXParser,
         "doc": DOCXParser,
+        "gdoc": DOCXParser,
         "xlsx": XLSXParser,
         "xls": XLSXParser,
+        "gsheet": XLSXParser,
         "pptx": PPTXParser,
         "ppt": PPTXParser,
+        "gslides": PPTXParser,
         "txt": TXTParser,
         "md": TXTParser,
         "csv": TXTParser,
@@ -32,11 +35,11 @@ class DocumentParserFactory:
         if not parser_cls and mime_type:
             if "pdf" in mime_type:
                 parser_cls = PDFParser
-            elif "word" in mime_type or "officedocument.wordprocessingml" in mime_type:
+            elif "word" in mime_type or "officedocument.wordprocessingml" in mime_type or "google-apps.document" in mime_type:
                 parser_cls = DOCXParser
-            elif "spreadsheet" in mime_type or "excel" in mime_type:
+            elif "spreadsheet" in mime_type or "excel" in mime_type or "google-apps.spreadsheet" in mime_type:
                 parser_cls = XLSXParser
-            elif "presentation" in mime_type or "powerpoint" in mime_type:
+            elif "presentation" in mime_type or "powerpoint" in mime_type or "google-apps.presentation" in mime_type:
                 parser_cls = PPTXParser
             elif "text" in mime_type:
                 parser_cls = TXTParser

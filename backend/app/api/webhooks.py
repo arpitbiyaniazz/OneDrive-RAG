@@ -95,10 +95,56 @@ async def onedrive_webhook_handler(
     )
 
 
+@router.post("/gdrive")
+async def gdrive_webhook_handler(
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Google Drive Push Notification Webhook handler.
+    Processes X-Goog-Resource-State headers (sync, add, update, trash, etc.).
+    """
+    channel_id = request.headers.get("X-Goog-Channel-ID")
+    resource_state = request.headers.get("X-Goog-Resource-State", "unknown")
+    channel_token = request.headers.get("X-Goog-Channel-Token")
+    resource_id = request.headers.get("X-Goog-Resource-ID")
+
+    if not channel_id:
+        raise HTTPException(status_code=400, detail="Missing X-Goog-Channel-ID header.")
+
+    # Validate channel token if configured
+    if settings.GOOGLE_WEBHOOK_SECRET and channel_token and channel_token != settings.GOOGLE_WEBHOOK_SECRET:
+        logger.warning("Rejected Google Drive notification: invalid channel token.")
+        raise HTTPException(status_code=403, detail="Invalid channel token.")
+
+    logger.info(f"Received Google Drive webhook: state='{resource_state}', channel='{channel_id}', resource='{resource_id}'")
+
+    # Initial sync handshake from Google
+    if resource_state == "sync":
+        return Response(status_code=status.HTTP_200_OK, content='{"status":"sync_acknowledged"}', media_type="application/json")
+
+    # For change events (add, update, trash), queue incremental sync
+    async def _trigger_gdrive_sync():
+        async with AsyncSessionLocal() as session:
+            stmt = select(User).limit(1)
+            res = await session.execute(stmt)
+            user = res.scalar_one_or_none()
+            if user:
+                await sync_service.run_sync(user_id=user.id)
+
+    background_tasks.add_task(_trigger_gdrive_sync)
+
+    return Response(
+        content='{"status":"accepted","resource_state":"' + resource_state + '"}',
+        media_type="application/json",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+
+
 @router.get("/subscriptions")
 async def list_active_subscriptions():
     """
-    Lists metadata about registered Microsoft Graph webhook subscriptions.
+    Lists metadata about registered Microsoft Graph and Google Drive webhook subscriptions.
     """
     return {
         "webhook_url": f"{settings.BACKEND_URL}/api/webhooks/onedrive",
@@ -106,4 +152,9 @@ async def list_active_subscriptions():
         "client_state_configured": bool(settings.WEBHOOK_CLIENT_STATE),
         "supported_change_types": ["created", "updated", "deleted"],
         "resource": "/me/drive/root",
+        "google_webhook_url": f"{settings.BACKEND_URL}/api/webhooks/gdrive",
+        "google_mock_mode": settings.DEV_MOCK_GDRIVE,
+        "google_token_configured": bool(settings.GOOGLE_WEBHOOK_SECRET),
+        "google_resource": "https://www.googleapis.com/drive/v3/changes",
     }
+
