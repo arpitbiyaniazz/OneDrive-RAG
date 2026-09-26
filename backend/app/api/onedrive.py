@@ -53,14 +53,17 @@ async def get_onedrive_tree(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Returns the full hierarchical or root tree of folders and files from OneDrive.
-    Uses real Microsoft Graph API if connected, falling back smoothly to sandbox mock files.
+    Returns the hierarchical tree of folders and files from the app's
+    designated OneDrive folder (configured via ONEDRIVE_ROOT_FOLDER).
+    Only files inside this folder are visible to the app.
     """
+    root_folder_name = settings.ONEDRIVE_ROOT_FOLDER
     access_token = await _get_valid_microsoft_token(current_user.id, db)
 
     if access_token and not settings.DEV_MOCK_ONEDRIVE:
         try:
-            items = await graph_service.list_drive_items(access_token, "root")
+            root_id = await graph_service.get_root_folder_id(access_token, root_folder_name)
+            items = await graph_service.list_drive_items(access_token, root_id)
             tree = []
             for item in items:
                 item_copy = dict(item)
@@ -71,9 +74,14 @@ async def get_onedrive_tree(
                     except Exception:
                         item_copy["children"] = []
                 tree.append(item_copy)
-            return {"items": tree, "provider": "onedrive", "source": "live"}
+            return {
+                "items": tree,
+                "provider": "onedrive",
+                "source": "live",
+                "root_folder": root_folder_name,
+            }
         except Exception as e:
-            logger.warning(f"Microsoft Graph API root list failed ({e}). Falling back to sandbox.")
+            logger.warning(f"Microsoft Graph API scoped list failed ({e}). Falling back to sandbox.")
 
     # Fallback to sandbox mock files (HR, Finance, Engineering)
     root_items = await mock_onedrive_provider.list_drive_items("root")
@@ -84,7 +92,7 @@ async def get_onedrive_tree(
             children = await mock_onedrive_provider.list_drive_items(item["id"])
             item_copy["children"] = children
         tree.append(item_copy)
-    return {"items": tree, "provider": "onedrive", "source": "sandbox"}
+    return {"items": tree, "provider": "onedrive", "source": "sandbox", "root_folder": root_folder_name}
 
 
 @router.get("/folders/{folder_id}/items")

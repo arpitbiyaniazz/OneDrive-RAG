@@ -61,14 +61,19 @@ async def get_google_drive_tree(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Returns the full hierarchical or root tree of folders and files from Google Drive.
-    Uses real Google Drive API v3 if connected, falling back smoothly to sandbox mock files.
+    Returns the hierarchical tree of folders and files from the app's
+    designated Google Drive folder (configured via GOOGLE_DRIVE_ROOT_FOLDER).
+    Only files inside this folder are visible to the app.
     """
+    root_folder_name = settings.GOOGLE_DRIVE_ROOT_FOLDER
     access_token = await _get_valid_google_token(current_user.id, db)
 
     if access_token and not settings.DEV_MOCK_GDRIVE:
         try:
-            items = await google_drive_service.list_drive_items(access_token, "root")
+            # Find or create the scoped root folder
+            root_id = await google_drive_service.get_root_folder_id(access_token, root_folder_name)
+
+            items = await google_drive_service.list_drive_items(access_token, root_id)
             tree = []
             for item in items:
                 item_copy = dict(item)
@@ -79,9 +84,15 @@ async def get_google_drive_tree(
                     except Exception:
                         item_copy["children"] = []
                 tree.append(item_copy)
-            return {"items": tree, "provider": "google_drive", "source": "live"}
+            return {
+                "items": tree,
+                "provider": "google_drive",
+                "source": "live",
+                "root_folder": root_folder_name,
+                "root_folder_id": root_id,
+            }
         except Exception as e:
-            logger.warning(f"Google Drive API root list failed ({e}). Trying refresh...")
+            logger.warning(f"Google Drive API scoped list failed ({e}). Trying refresh...")
             # If 401 error, try token refresh
             stmt = select(OAuthAccount).where(
                 OAuthAccount.user_id == current_user.id,
@@ -96,7 +107,9 @@ async def get_google_drive_tree(
                     new_access = new_t["access_token"]
                     acc.encrypted_access_token = encrypt_token(new_access)
                     await db.commit()
-                    items = await google_drive_service.list_drive_items(new_access, "root")
+
+                    root_id = await google_drive_service.get_root_folder_id(new_access, root_folder_name)
+                    items = await google_drive_service.list_drive_items(new_access, root_id)
                     tree = []
                     for item in items:
                         item_copy = dict(item)
@@ -107,7 +120,13 @@ async def get_google_drive_tree(
                             except Exception:
                                 item_copy["children"] = []
                         tree.append(item_copy)
-                    return {"items": tree, "provider": "google_drive", "source": "live"}
+                    return {
+                        "items": tree,
+                        "provider": "google_drive",
+                        "source": "live",
+                        "root_folder": root_folder_name,
+                        "root_folder_id": root_id,
+                    }
                 except Exception as re:
                     logger.error(f"Token refresh retry also failed: {re}")
 
@@ -120,7 +139,7 @@ async def get_google_drive_tree(
             children = await mock_google_drive_provider.list_drive_items(item["id"])
             item_copy["children"] = children
         tree.append(item_copy)
-    return {"items": tree, "provider": "google_drive", "source": "sandbox"}
+    return {"items": tree, "provider": "google_drive", "source": "sandbox", "root_folder": root_folder_name}
 
 
 @router.get("/folders/{folder_id}/items")

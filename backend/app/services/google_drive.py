@@ -85,6 +85,58 @@ class GoogleDriveService:
                     raise ValueError(f"Failed to fetch Google profile: {res.text}")
                 return res.json()
 
+    async def find_folder_by_name(self, access_token: str, folder_name: str, parent_id: str = "root") -> Optional[Dict[str, Any]]:
+        """Finds a folder by name within a parent folder. Returns folder metadata or None."""
+        with trace_gdrive_call("find_folder_by_name", f"/files?q=name='{folder_name}'"):
+            headers = {"Authorization": f"Bearer {access_token}"}
+            query = (
+                f"name = '{folder_name}' and "
+                f"'{parent_id}' in parents and "
+                f"mimeType = 'application/vnd.google-apps.folder' and "
+                f"trashed = false"
+            )
+            params = {
+                "q": query,
+                "fields": "files(id, name, mimeType, webViewLink)",
+                "pageSize": 1,
+            }
+            async with httpx.AsyncClient() as client:
+                res = await client.get(f"{GOOGLE_DRIVE_API_BASE}/files", headers=headers, params=params)
+                if res.status_code != 200:
+                    logger.warning(f"Failed to search for folder '{folder_name}': {res.text}")
+                    return None
+                files = res.json().get("files", [])
+                return files[0] if files else None
+
+    async def create_folder(self, access_token: str, folder_name: str, parent_id: str = "root") -> Dict[str, Any]:
+        """Creates a new folder in Google Drive."""
+        with trace_gdrive_call("create_folder", f"/files (create folder '{folder_name}')"):
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            }
+            body = {
+                "name": folder_name,
+                "mimeType": "application/vnd.google-apps.folder",
+                "parents": [parent_id],
+            }
+            async with httpx.AsyncClient() as client:
+                res = await client.post(f"{GOOGLE_DRIVE_API_BASE}/files", headers=headers, json=body)
+                if res.status_code not in (200, 201):
+                    raise ValueError(f"Failed to create folder '{folder_name}': {res.text}")
+                return res.json()
+
+    async def get_root_folder_id(self, access_token: str, folder_name: str) -> str:
+        """Finds the app's root folder by name, creating it if needed. Returns the folder ID."""
+        folder = await self.find_folder_by_name(access_token, folder_name)
+        if folder:
+            logger.info(f"Using existing Google Drive folder: '{folder_name}' (id={folder['id']})")
+            return folder["id"]
+        # Create the folder
+        logger.info(f"Creating Google Drive folder: '{folder_name}'")
+        new_folder = await self.create_folder(access_token, folder_name)
+        return new_folder["id"]
+
     async def list_drive_items(self, access_token: str, folder_id: str = "root") -> List[Dict[str, Any]]:
         """Lists files and folders within a Google Drive folder."""
         with trace_gdrive_call("list_drive_items", f"/files?q='{folder_id}' in parents"):

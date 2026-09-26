@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     GOOGLE_REDIRECT_URI: str = "http://localhost:5173/auth/google/callback"
     DEV_MOCK_GDRIVE: bool = True
     GOOGLE_WEBHOOK_SECRET: str = "gdrive-rag-webhook-secret-token"
+    GOOGLE_DRIVE_ROOT_FOLDER: str = "OneDrive-RAG"  # Only list files inside this folder
+
+    # OneDrive Root Folder
+    ONEDRIVE_ROOT_FOLDER: str = "OneDrive-RAG"  # Only list files inside this folder
 
 
     # Database

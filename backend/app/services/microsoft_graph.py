@@ -61,6 +61,31 @@ class MicrosoftGraphService:
                     raise ValueError(f"Failed to fetch Microsoft profile: {res.text}")
                 return res.json()
 
+    async def get_root_folder_id(self, access_token: str, folder_name: str) -> str:
+        """Finds the app's root folder by name in OneDrive root, creating it if needed."""
+        with trace_onedrive_call("get_root_folder_id", f"/me/drive/root:/{folder_name}"):
+            headers = {"Authorization": f"Bearer {access_token}"}
+            url = f"{GRAPH_BASE_URL}/me/drive/root:/{folder_name}"
+            async with httpx.AsyncClient() as client:
+                res = await client.get(url, headers=headers)
+                if res.status_code == 200:
+                    data = res.json()
+                    logger.info(f"Using existing OneDrive folder: '{folder_name}' (id={data['id']})")
+                    return data["id"]
+
+                # Folder doesn't exist — create it
+                logger.info(f"Creating OneDrive folder: '{folder_name}'")
+                create_url = f"{GRAPH_BASE_URL}/me/drive/root/children"
+                body = {
+                    "name": folder_name,
+                    "folder": {},
+                    "@microsoft.graph.conflictBehavior": "fail",
+                }
+                create_res = await client.post(create_url, headers=headers, json=body)
+                if create_res.status_code in (200, 201):
+                    return create_res.json()["id"]
+                raise ValueError(f"Failed to create OneDrive folder '{folder_name}': {create_res.text}")
+
     async def list_drive_items(self, access_token: str, item_id: str = "root") -> List[Dict[str, Any]]:
         """Lists folders and files in a specific OneDrive folder."""
         with trace_onedrive_call("list_drive_items", f"/me/drive/items/{item_id}/children"):
