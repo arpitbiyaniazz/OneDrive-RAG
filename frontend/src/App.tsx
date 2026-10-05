@@ -75,19 +75,23 @@ export function App() {
             const isGoogle =
               window.location.pathname.includes('google') ||
               code.startsWith('mock_google') ||
-              (params.get('scope') && params.get('scope')!.includes('google'));
+              (params.get('scope') && params.get('scope')!.includes('google')) ||
+              (params.get('scope') && params.get('scope')!.includes('googleapis'));
 
             const authRes = isGoogle
               ? await exchangeGoogleAuthCode(code, state)
               : await exchangeAuthCode(code, state);
 
             setCurrentUser(authRes.user);
-            window.history.replaceState({}, document.title, window.location.pathname);
+            // Redirect to root after successful OAuth — ensures chat page loads
+            window.history.replaceState({}, document.title, '/');
           } catch (e) {
             console.error('Failed to exchange OAuth code', e);
+            // Redirect to root even on failure to avoid stale callback URL
+            window.history.replaceState({}, document.title, '/');
           }
         } else {
-          // 2. Fetch authenticated profile
+          // 2. Fetch authenticated profile (using stored JWT from localStorage)
           const user = await fetchCurrentUser();
           setCurrentUser(user);
         }
