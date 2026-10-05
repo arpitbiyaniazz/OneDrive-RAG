@@ -61,11 +61,41 @@ export function ChatBox({
     textareaRef.current?.focus();
   }, [sessionId]);
 
-  // Reset messages when session ID changes to null (new chat)
+  // Load existing messages when session changes, or reset for new chat
   useEffect(() => {
     if (!sessionId) {
       setMessages([]);
+      return;
     }
+
+    // Fetch existing messages for this session
+    async function loadSessionMessages() {
+      try {
+        const res = await fetch(`/api/chat/sessions/${sessionId}/messages`, {
+          headers: getAuthHeaders(),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.messages && data.messages.length > 0) {
+            setMessages(
+              data.messages.map((m: any) => ({
+                id: m.id,
+                role: m.role,
+                content: m.content,
+                citations: m.citations || undefined,
+                langfuse_trace_id: m.langfuse_trace_id || undefined,
+                feedback: m.feedback,
+                timestamp: m.created_at,
+              }))
+            );
+          }
+        }
+      } catch (e) {
+        console.error('Failed to load session messages', e);
+      }
+    }
+
+    loadSessionMessages();
   }, [sessionId]);
 
   async function handleSend(queryText?: string) {

@@ -1,4 +1,6 @@
+import json
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -8,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import get_current_user
 from app.core.telemetry.langfuse_client import log_evaluation_score
-from app.db.database import get_db
+from app.db.database import AsyncSessionLocal, get_db
 from app.models.chat import ChatMessage, ChatSession
 from app.models.document import Document
 from app.models.user import User
@@ -85,13 +87,53 @@ async def stream_chat(
     recent_msgs = list(reversed(res.scalars().all()))
     history_payload = [{"role": m.role, "content": m.content} for m in recent_msgs]
 
-    # 4. Stream RAG generator
-    return StreamingResponse(
-        rag_service.stream_rag_response(
+    # 4. Stream RAG generator — wrap to persist assistant reply after stream
+    async def _stream_and_persist():
+        accumulated_text = ""
+        citations_payload = None
+        trace_id = None
+
+        async for chunk in rag_service.stream_rag_response(
             query=req.query,
             user_id=current_user.id,
             chat_history=history_payload,
-        ),
+        ):
+            yield chunk
+
+            # Parse the SSE chunk to extract content
+            if chunk.startswith("data: "):
+                try:
+                    parsed = json.loads(chunk[6:].strip())
+                    if "token" in parsed:
+                        accumulated_text += parsed["token"]
+                    if parsed.get("done"):
+                        citations_payload = parsed.get("citations")
+                        trace_id = parsed.get("trace_id")
+                except Exception:
+                    pass
+
+        # After stream completes, persist the assistant message
+        if accumulated_text.strip():
+            async with AsyncSessionLocal() as persist_session:
+                assistant_msg = ChatMessage(
+                    session_id=session_id,
+                    user_id=current_user.id,
+                    role="assistant",
+                    content=accumulated_text.strip(),
+                    citations=citations_payload,
+                    langfuse_trace_id=trace_id,
+                )
+                persist_session.add(assistant_msg)
+
+                # Update session timestamp
+                chat_sess = await persist_session.get(ChatSession, session_id)
+                if chat_sess:
+                    chat_sess.updated_at = datetime.now(timezone.utc)
+
+                await persist_session.commit()
+
+    return StreamingResponse(
+        _stream_and_persist(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
