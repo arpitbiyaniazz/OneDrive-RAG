@@ -22,6 +22,7 @@ python-pptx>=0.6.23
 
 # AI & Embeddings
 openai>=1.35.0
+mistralai>=1.0.0
 tiktoken>=0.7.0
 numpy>=1.26.0
 

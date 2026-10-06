@@ -7,6 +7,7 @@ from typing import AsyncGenerator, Dict, List, Optional
 from app.core.config import settings
 from app.core.telemetry.langfuse_client import get_prompt_template, observe_rag
 from app.core.telemetry.otel_setup import get_current_trace_id
+from app.services.llm_service import get_llm_client
 from app.services.query_engine import query_engine
 from app.services.reranking_service import reranking_service
 from app.services.retrieval_service import RetrievedChunk, retrieval_service
@@ -115,11 +116,11 @@ class GroundedRAGService:
             f"Provide a clear, grounded answer with source citations [1], [2] where appropriate."
         )
 
-        # 5. Check if real OpenAI API is available
-        if settings.OPENAI_API_KEY and not settings.OPENAI_API_KEY.startswith("your-"):
+        # 5. Check if real LLM API (Mistral or OpenAI) is available
+        llm = get_llm_client()
+        if llm:
             try:
-                from openai import AsyncOpenAI
-                client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+                client = llm.client
                 messages = [{"role": "system", "content": system_instructions}]
                 if chat_history:
                     for h in chat_history[-4:]:  # Include last 2 turns
@@ -127,7 +128,7 @@ class GroundedRAGService:
                 messages.append({"role": "user", "content": user_content})
 
                 response_stream = await client.chat.completions.create(
-                    model=settings.OPENAI_MODEL,
+                    model=llm.model,
                     messages=messages,
                     stream=True,
                     temperature=0.1,
@@ -141,7 +142,7 @@ class GroundedRAGService:
                 yield f"data: {json.dumps({'citations': citations, 'trace_id': langfuse_trace_id, 'done': True})}\n\n"
                 return
             except Exception as e:
-                logger.error(f"OpenAI streaming error, falling back to local grounded generator: {e}")
+                logger.error(f"{llm.provider} ({llm.model}) streaming error, falling back to local grounded generator: {e}")
 
         # 6. High-Fidelity Local Grounded Generator (Offline / Sandbox Fallback)
         # Synthesizes an authentic grounded response directly from the top chunks with citations

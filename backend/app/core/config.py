@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     DATABASE_URL_SYNC: str = "postgresql://postgres:postgres@localhost:5432/onedrive_rag"
 
     # AI Models
+    LLM_PROVIDER: str = "mistral"
+    MISTRAL_API_KEY: str = ""
+    MISTRAL_MODEL: str = "mistral-small-latest"
+    MISTRAL_API_BASE: str = "https://api.mistral.ai/v1"
+
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o-mini"
     EMBEDDING_MODEL: str = "text-embedding-3-small"

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from app.core.config import settings
 from app.core.telemetry.langfuse_client import get_prompt_template, observe_rag
+from app.services.llm_service import get_llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -81,13 +82,12 @@ class QueryUnderstandingEngine:
             question_type = "FACTUAL"
 
         # If LLM API is available and query is complex, we can use LLM structured output
-        if settings.OPENAI_API_KEY and not settings.OPENAI_API_KEY.startswith("your-"):
+        llm = get_llm_client()
+        if llm:
             try:
-                from openai import AsyncOpenAI
-                client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
                 system_prompt = get_prompt_template("query_classifier", version="v1")
-                res = await client.chat.completions.create(
-                    model=settings.OPENAI_MODEL,
+                res = await llm.client.chat.completions.create(
+                    model=llm.model,
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": f"Extract metadata and intent for query: '{clean_q}'"},
@@ -95,7 +95,12 @@ class QueryUnderstandingEngine:
                     response_format={"type": "json_object"},
                     temperature=0.0,
                 )
-                llm_parsed = json.loads(res.choices[0].message.content or "{}")
+                raw_text = res.choices[0].message.content or "{}"
+                clean_json_str = raw_text.strip()
+                if clean_json_str.startswith("```"):
+                    clean_json_str = re.sub(r"^```(?:json)?\s*", "", clean_json_str)
+                    clean_json_str = re.sub(r"\s*```$", "", clean_json_str)
+                llm_parsed = json.loads(clean_json_str)
                 if llm_parsed.get("folder_path"):
                     folder_filter = llm_parsed["folder_path"]
                 if llm_parsed.get("file_type"):
@@ -103,7 +108,7 @@ class QueryUnderstandingEngine:
                 if llm_parsed.get("question_type"):
                     question_type = llm_parsed["question_type"]
             except Exception as e:
-                logger.debug(f"LLM query understanding fallback to rule engine: {e}")
+                logger.debug(f"{llm.provider} query understanding fallback to rule engine: {e}")
 
         # Semantic query cleans out conversational filler
         semantic_q = clean_q
