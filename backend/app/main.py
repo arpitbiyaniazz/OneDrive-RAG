@@ -30,8 +30,18 @@ async def lifespan(app: FastAPI):
         await init_db()
     except Exception as e:
         logger.warning(f"Database initialization warning (will retry on first connection): {e}")
+    # Initialize Langfuse client
+    from app.core.telemetry.langfuse_client import get_langfuse
+    lf = get_langfuse()
+    if lf:
+        logger.info("Langfuse observability client ready.")
     yield
     logger.info("Shutting down application...")
+    if lf and hasattr(lf, "flush"):
+        try:
+            lf.flush()
+        except Exception:
+            pass
 
 
 app = FastAPI(

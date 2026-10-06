@@ -1,5 +1,6 @@
 import functools
 import logging
+import os
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -8,17 +9,29 @@ logger = logging.getLogger(__name__)
 from app.core.config import settings
 from app.core.telemetry.otel_setup import get_current_trace_id
 
+# Ensure environment variables are set so Langfuse SDK decorators and client find them
+if settings.LANGFUSE_PUBLIC_KEY:
+    os.environ["LANGFUSE_PUBLIC_KEY"] = settings.LANGFUSE_PUBLIC_KEY
+if settings.LANGFUSE_SECRET_KEY:
+    os.environ["LANGFUSE_SECRET_KEY"] = settings.LANGFUSE_SECRET_KEY
+if settings.LANGFUSE_HOST:
+    os.environ["LANGFUSE_HOST"] = settings.LANGFUSE_HOST
+
 # Attempt to import Langfuse
 try:
-    from langfuse import Langfuse
-    from langfuse.decorators import langfuse_context, observe
-
+    from langfuse import Langfuse, observe, get_client
     LANGFUSE_SDK_AVAILABLE = True
 except ImportError:
-    LANGFUSE_SDK_AVAILABLE = False
-    Langfuse = None
-    langfuse_context = None
-    observe = None
+    try:
+        from langfuse import Langfuse
+        from langfuse.decorators import observe
+        get_client = None
+        LANGFUSE_SDK_AVAILABLE = True
+    except ImportError:
+        LANGFUSE_SDK_AVAILABLE = False
+        Langfuse = None
+        observe = None
+        get_client = None
 
 _langfuse_instance: Optional[Any] = None
 
@@ -34,11 +47,14 @@ def get_langfuse() -> Optional[Any]:
 
     if settings.LANGFUSE_PUBLIC_KEY and settings.LANGFUSE_SECRET_KEY:
         try:
-            _langfuse_instance = Langfuse(
-                public_key=settings.LANGFUSE_PUBLIC_KEY,
-                secret_key=settings.LANGFUSE_SECRET_KEY,
-                host=settings.LANGFUSE_HOST,
-            )
+            if get_client:
+                _langfuse_instance = get_client()
+            else:
+                _langfuse_instance = Langfuse(
+                    public_key=settings.LANGFUSE_PUBLIC_KEY,
+                    secret_key=settings.LANGFUSE_SECRET_KEY,
+                    host=settings.LANGFUSE_HOST,
+                )
             logger.info("Langfuse client initialized successfully.")
             return _langfuse_instance
         except Exception as e:
@@ -86,11 +102,19 @@ def get_prompt_template(prompt_name: str, version: str = "v2") -> str:
     or falls back to local versioned prompt registry.
     """
     client = get_langfuse()
-    if client:
+    if client and hasattr(client, "get_prompt"):
         try:
-            prompt = client.get_prompt(prompt_name, version=version)
+            int_ver = None
+            if version and version.startswith("v") and version[1:].isdigit():
+                int_ver = int(version[1:])
+            elif isinstance(version, int):
+                int_ver = version
+
+            prompt = client.get_prompt(prompt_name, version=int_ver) if int_ver else client.get_prompt(prompt_name)
             if prompt and hasattr(prompt, "prompt"):
                 return prompt.prompt
+            elif prompt and hasattr(prompt, "compile"):
+                return prompt.compile()
         except Exception as e:
             logger.debug(f"Langfuse prompt fetch failed for '{prompt_name}:{version}', using local fallback: {e}")
 
@@ -112,7 +136,6 @@ def observe_rag(
     """
     def decorator(func: Callable):
         if LANGFUSE_SDK_AVAILABLE and observe:
-            # Use Langfuse's native observe decorator
             @observe(name=name)
             @functools.wraps(func)
             async def async_wrapped(*args, **kwargs):
@@ -126,8 +149,13 @@ def observe_rag(
                     metadata["prompt_name"] = prompt_name
                     metadata["prompt_version"] = prompt_version or "default"
 
-                if langfuse_context and metadata:
-                    langfuse_context.update_current_observation(metadata=metadata)
+                client = get_langfuse()
+                if client and metadata:
+                    try:
+                        if hasattr(client, "update_current_span"):
+                            client.update_current_span(metadata=metadata)
+                    except Exception:
+                        pass
 
                 return await func(*args, **kwargs)
 
@@ -144,15 +172,19 @@ def observe_rag(
                     metadata["prompt_name"] = prompt_name
                     metadata["prompt_version"] = prompt_version or "default"
 
-                if langfuse_context and metadata:
-                    langfuse_context.update_current_observation(metadata=metadata)
+                client = get_langfuse()
+                if client and metadata:
+                    try:
+                        if hasattr(client, "update_current_span"):
+                            client.update_current_span(metadata=metadata)
+                    except Exception:
+                        pass
 
                 return func(*args, **kwargs)
 
             import inspect
             return async_wrapped if inspect.iscoroutinefunction(func) else sync_wrapped
         else:
-            # Fallback wrapper if Langfuse is not installed
             @functools.wraps(func)
             async def async_fallback(*args, **kwargs):
                 return await func(*args, **kwargs)
@@ -171,7 +203,7 @@ def log_evaluation_score(
     name: str,
     value: float,
     comment: Optional[str] = None,
-):
+) -> bool:
     """
     Logs an automated evaluation score (e.g. groundedness=0.95, citation_accuracy=1.0)
     or user feedback (thumbs_up=1.0, thumbs_down=0.0) directly to Langfuse.
@@ -179,12 +211,22 @@ def log_evaluation_score(
     client = get_langfuse()
     if client and trace_id:
         try:
-            client.score(
-                trace_id=trace_id,
-                name=name,
-                value=value,
-                comment=comment,
-            )
+            if hasattr(client, "create_score"):
+                client.create_score(
+                    trace_id=trace_id,
+                    name=name,
+                    value=value,
+                    comment=comment,
+                )
+            elif hasattr(client, "score"):
+                client.score(
+                    trace_id=trace_id,
+                    name=name,
+                    value=value,
+                    comment=comment,
+                )
+            if hasattr(client, "flush"):
+                client.flush()
             logger.info(f"Logged score '{name}' = {value} for trace {trace_id}")
             return True
         except Exception as e:

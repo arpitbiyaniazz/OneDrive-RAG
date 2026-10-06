@@ -5,7 +5,7 @@ import uuid
 from typing import AsyncGenerator, Dict, List, Optional
 
 from app.core.config import settings
-from app.core.telemetry.langfuse_client import get_prompt_template, observe_rag
+from app.core.telemetry.langfuse_client import get_langfuse, get_prompt_template, observe_rag
 from app.core.telemetry.otel_setup import get_current_trace_id
 from app.services.llm_service import get_llm_client
 from app.services.query_engine import query_engine
@@ -71,7 +71,15 @@ class GroundedRAGService:
         Server-Sent Events streaming generator yielding response tokens and final citations.
         """
         start_time = time.perf_counter()
-        langfuse_trace_id = str(uuid.uuid4())
+        langfuse_client = get_langfuse()
+        langfuse_trace_id = None
+        if langfuse_client:
+            if hasattr(langfuse_client, "get_current_trace_id"):
+                langfuse_trace_id = langfuse_client.get_current_trace_id()
+            if not langfuse_trace_id and hasattr(langfuse_client, "create_trace_id"):
+                langfuse_trace_id = langfuse_client.create_trace_id()
+        if not langfuse_trace_id:
+            langfuse_trace_id = str(uuid.uuid4())
         otel_trace_id = get_current_trace_id()
 
         # 1. Query Understanding
@@ -140,6 +148,11 @@ class GroundedRAGService:
                         yield f"data: {json.dumps({'token': delta})}\n\n"
 
                 yield f"data: {json.dumps({'citations': citations, 'trace_id': langfuse_trace_id, 'done': True})}\n\n"
+                if langfuse_client and hasattr(langfuse_client, "flush"):
+                    try:
+                        langfuse_client.flush()
+                    except Exception:
+                        pass
                 return
             except Exception as e:
                 logger.error(f"{llm.provider} ({llm.model}) streaming error, falling back to local grounded generator: {e}")
@@ -165,6 +178,11 @@ class GroundedRAGService:
             yield f"data: {json.dumps({'token': word + ' '})}\n\n"
 
         yield f"data: {json.dumps({'citations': citations, 'trace_id': langfuse_trace_id, 'done': True})}\n\n"
+        if langfuse_client and hasattr(langfuse_client, "flush"):
+            try:
+                langfuse_client.flush()
+            except Exception:
+                pass
 
 
 rag_service = GroundedRAGService()
