@@ -42,6 +42,7 @@ export function ChatBox({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const activeSessionIdRef = useRef<string | null>(sessionId);
 
   // Auto-scroll on new message / token stream
   useEffect(() => {
@@ -63,6 +64,12 @@ export function ChatBox({
 
   // Load existing messages when session changes, or reset for new chat
   useEffect(() => {
+    // If sessionId matches what is already active in this component (e.g. assigned during streaming), do not re-fetch
+    if (activeSessionIdRef.current === sessionId) {
+      return;
+    }
+    activeSessionIdRef.current = sessionId;
+
     if (!sessionId) {
       setMessages([]);
       return;
@@ -144,6 +151,7 @@ export function ChatBox({
 
       const receivedSessionId = response.headers.get('X-Chat-Session-Id');
       if (receivedSessionId && receivedSessionId !== sessionId) {
+        activeSessionIdRef.current = receivedSessionId;
         onSessionChange(receivedSessionId, q);
       }
 
@@ -167,20 +175,47 @@ export function ChatBox({
                 const parsed = JSON.parse(line.substring(6));
                 if (parsed.token) {
                   accumulatedText += parsed.token;
-                  setMessages((prev) =>
-                    prev.map((m) =>
+                  setMessages((prev) => {
+                    const hasAssistant = prev.some((m) => m.id === assistantMsgId);
+                    if (!hasAssistant) {
+                      return [
+                        ...prev,
+                        {
+                          id: assistantMsgId,
+                          role: 'assistant',
+                          content: accumulatedText,
+                          timestamp: new Date().toISOString(),
+                        },
+                      ];
+                    }
+                    return prev.map((m) =>
                       m.id === assistantMsgId ? { ...m, content: accumulatedText } : m
-                    )
-                  );
+                    );
+                  });
                 }
                 if (parsed.done) {
                   if (parsed.session_id && parsed.session_id !== sessionId) {
+                    activeSessionIdRef.current = parsed.session_id;
                     onSessionChange(parsed.session_id, q);
                   }
                   extractedCitations = parsed.citations || [];
                   traceId = parsed.trace_id || '';
-                  setMessages((prev) =>
-                    prev.map((m) =>
+                  setMessages((prev) => {
+                    const hasAssistant = prev.some((m) => m.id === assistantMsgId);
+                    if (!hasAssistant) {
+                      return [
+                        ...prev,
+                        {
+                          id: assistantMsgId,
+                          role: 'assistant',
+                          content: accumulatedText,
+                          citations: extractedCitations,
+                          langfuse_trace_id: traceId,
+                          timestamp: new Date().toISOString(),
+                        },
+                      ];
+                    }
+                    return prev.map((m) =>
                       m.id === assistantMsgId
                         ? {
                             ...m,
@@ -189,8 +224,8 @@ export function ChatBox({
                             langfuse_trace_id: traceId,
                           }
                         : m
-                    )
-                  );
+                    );
+                  });
                 }
               } catch {
                 // Ignore parse errors on partial chunks
