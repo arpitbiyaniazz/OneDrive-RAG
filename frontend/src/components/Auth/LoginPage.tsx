@@ -11,6 +11,8 @@ import {
   AlertCircle,
   Cpu,
   FileSpreadsheet,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { HealthStatus, TelemetryStatus, UserProfile } from '../../types';
 import { fetchLoginUrl, fetchGoogleLoginUrl, loginSandboxDemo } from '../../services/api';
@@ -19,9 +21,17 @@ interface LoginPageProps {
   onLoginSuccess: (user: UserProfile) => void;
   health: HealthStatus | null;
   telemetry: TelemetryStatus | null;
+  theme?: 'dark' | 'light';
+  onToggleTheme?: () => void;
 }
 
-export function LoginPage({ onLoginSuccess, health, telemetry }: LoginPageProps) {
+export function LoginPage({
+  onLoginSuccess,
+  health,
+  telemetry,
+  theme = 'dark',
+  onToggleTheme,
+}: LoginPageProps) {
   const [loading, setLoading] = useState<'microsoft' | 'google' | 'sandbox' | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -72,9 +82,45 @@ export function LoginPage({ onLoginSuccess, health, telemetry }: LoginPageProps)
         padding: '2rem 1.5rem',
         position: 'relative',
         overflow: 'hidden',
-        background: 'radial-gradient(ellipse at 50% 10%, #172554 0%, #0a0d14 65%)',
+        background: 'var(--login-bg, radial-gradient(ellipse at 50% 10%, #172554 0%, #0a0d14 65%))',
       }}
     >
+      {/* Top right Theme Switcher */}
+      {onToggleTheme && (
+        <div style={{ position: 'absolute', top: '1.25rem', right: '1.5rem', zIndex: 50 }}>
+          <button
+            onClick={onToggleTheme}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.45rem',
+              padding: '0.45rem 0.85rem',
+              background: 'var(--app-surface)',
+              border: '1px solid var(--app-border)',
+              borderRadius: 'var(--radius-full)',
+              color: 'var(--app-text)',
+              fontSize: '0.8rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.15s ease',
+              boxShadow: 'var(--card-shadow)',
+            }}
+            title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} mode`}
+          >
+            {theme === 'dark' ? (
+              <>
+                <Sun size={15} color="#f59e0b" />
+                <span>Light</span>
+              </>
+            ) : (
+              <>
+                <Moon size={15} color="#0284c7" />
+                <span>Dark</span>
+              </>
+            )}
+          </button>
+        </div>
+      )}
       {/* Decorative ambient background glows */}
       <div
         style={{
@@ -151,7 +197,7 @@ export function LoginPage({ onLoginSuccess, health, telemetry }: LoginPageProps)
               letterSpacing: '-0.03em',
               lineHeight: 1.15,
               marginBottom: '1rem',
-              background: 'linear-gradient(135deg, #ffffff 0%, #cbd5e1 50%, #94a3b8 100%)',
+              background: 'var(--login-hero-title, linear-gradient(135deg, #ffffff 0%, #cbd5e1 50%, #94a3b8 100%))',
               WebkitBackgroundClip: 'text',
               WebkitTextFillColor: 'transparent',
             }}

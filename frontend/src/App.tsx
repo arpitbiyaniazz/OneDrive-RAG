@@ -9,6 +9,8 @@ import {
   PanelLeftClose,
   X,
   CheckCircle2,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { HealthStatus, TelemetryStatus, OneDriveItem, UserProfile } from './types';
 import {
@@ -61,6 +63,21 @@ export function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
   const [isKnowledgeDrawerOpen, setIsKnowledgeDrawerOpen] = useState<boolean>(false);
   const [knowledgeTab, setKnowledgeTab] = useState<'browse' | 'indexed'>('browse');
+
+  // Theme Mode (Dark / Light) with localStorage persistence
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    const saved = localStorage.getItem('onedrive_rag_theme');
+    return saved === 'light' || saved === 'dark' ? saved : 'dark';
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('onedrive_rag_theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+  };
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -182,6 +199,8 @@ export function App() {
         onLoginSuccess={(user) => setCurrentUser(user)}
         health={health}
         telemetry={telemetry}
+        theme={theme}
+        onToggleTheme={toggleTheme}
       />
     );
   }
@@ -504,7 +523,7 @@ export function App() {
                   justifyContent: 'center',
                   gap: '0.4rem',
                   padding: '0.45rem 0.5rem',
-                  background: 'rgba(255, 255, 255, 0.05)',
+                  background: 'var(--app-sidebar-hover)',
                   border: '1px solid var(--app-border)',
                   borderRadius: 'var(--radius-sm)',
                   color: 'var(--app-text)',
@@ -519,7 +538,7 @@ export function App() {
                 }}
                 onMouseLeave={(e) => {
                   e.currentTarget.style.borderColor = 'var(--app-border)';
-                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                  e.currentTarget.style.background = 'var(--app-sidebar-hover)';
                 }}
               >
                 <FolderSync size={13} color="var(--brand-cyan)" />
@@ -584,27 +603,49 @@ export function App() {
                 </div>
               </div>
 
-              <button
-                onClick={async () => {
-                  await logoutUser();
-                  setCurrentUser(null);
-                }}
-                title="Sign out"
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  color: 'var(--app-text-muted)',
-                  cursor: 'pointer',
-                  padding: '6px',
-                  borderRadius: '4px',
-                  display: 'flex',
-                  alignItems: 'center',
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.color = '#fb7185')}
-                onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--app-text-muted)')}
-              >
-                <LogOut size={16} />
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                <button
+                  onClick={toggleTheme}
+                  title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} mode`}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'var(--app-text-muted)',
+                    cursor: 'pointer',
+                    padding: '6px',
+                    borderRadius: '4px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    transition: 'color 0.15s ease',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.color = theme === 'dark' ? '#f59e0b' : '#0284c7')}
+                  onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--app-text-muted)')}
+                >
+                  {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+                </button>
+
+                <button
+                  onClick={async () => {
+                    await logoutUser();
+                    setCurrentUser(null);
+                  }}
+                  title="Sign out"
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'var(--app-text-muted)',
+                    cursor: 'pointer',
+                    padding: '6px',
+                    borderRadius: '4px',
+                    display: 'flex',
+                    alignItems: 'center',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.color = '#fb7185')}
+                  onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--app-text-muted)')}
+                >
+                  <LogOut size={16} />
+                </button>
+              </div>
             </div>
           )}
         </aside>
@@ -632,6 +673,8 @@ export function App() {
           userName={currentUser?.full_name?.split(' ')[0] || 'there'}
           isSidebarOpen={isSidebarOpen}
           onOpenSidebar={() => setIsSidebarOpen(true)}
+          theme={theme}
+          onToggleTheme={toggleTheme}
         />
       </main>
 
@@ -737,7 +780,7 @@ export function App() {
                 gap: '0.5rem',
                 padding: '0.75rem 1.5rem',
                 borderBottom: '1px solid var(--app-border)',
-                background: 'rgba(0, 0, 0, 0.2)',
+                background: 'var(--app-sidebar-hover)',
               }}
             >
               <button

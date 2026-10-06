@@ -262,7 +262,7 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
             style={{
               display: 'inline-flex',
               padding: '3px',
-              background: 'rgba(15, 23, 42, 0.7)',
+              background: 'var(--app-sidebar-hover)',
               borderRadius: 'var(--radius-md)',
               border: '1px solid var(--border-color)',
             }}
@@ -347,7 +347,7 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
               width: '100%',
               padding: '0.6rem 0.75rem 0.6rem 2.25rem',
               borderRadius: 'var(--radius-md)',
-              background: 'rgba(15, 23, 42, 0.6)',
+              background: 'var(--app-input-bg)',
               border: '1px solid var(--border-color)',
               color: 'var(--text-primary)',
               fontSize: '0.875rem',

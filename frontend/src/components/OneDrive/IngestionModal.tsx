@@ -59,7 +59,7 @@ export function IngestionModal({ jobId, onClose, onComplete }: IngestionModalPro
           width: '100%',
           maxWidth: '520px',
           padding: '2rem',
-          background: 'rgba(15, 23, 42, 0.95)',
+          background: 'var(--app-surface)',
           boxShadow: '0 20px 50px rgba(0, 0, 0, 0.6)',
         }}
       >

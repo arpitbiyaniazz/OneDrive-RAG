@@ -129,7 +129,7 @@ export function KnowledgeBaseTable() {
         </div>
         <div className="glass-card" style={{ padding: '1.25rem' }}>
           <span style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>Storage Engine</span>
-          <p style={{ fontSize: '1.25rem', fontWeight: 700, marginTop: '0.25rem', color: '#38bdf8' }}>
+          <p style={{ fontSize: '1.25rem', fontWeight: 700, marginTop: '0.25rem', color: 'var(--brand-cyan)' }}>
             PostgreSQL + pgvector
           </p>
         </div>
@@ -166,7 +166,7 @@ export function KnowledgeBaseTable() {
                 width: '100%',
                 padding: '0.6rem 0.75rem 0.6rem 2.25rem',
                 borderRadius: 'var(--radius-md)',
-                background: 'rgba(15, 23, 42, 0.6)',
+                background: 'var(--app-input-bg)',
                 border: '1px solid var(--border-color)',
                 color: 'var(--text-primary)',
                 fontSize: '0.875rem',
@@ -184,7 +184,7 @@ export function KnowledgeBaseTable() {
                 style={{
                   padding: '0.55rem 1rem',
                   borderRadius: 'var(--radius-md)',
-                  background: 'rgba(15, 23, 42, 0.6)',
+                  background: 'var(--app-input-bg)',
                   border: '1px solid var(--border-color)',
                   color: 'var(--text-primary)',
                   fontSize: '0.8125rem',
@@ -208,7 +208,7 @@ export function KnowledgeBaseTable() {
                 style={{
                   padding: '0.55rem 0.75rem',
                   borderRadius: 'var(--radius-md)',
-                  background: 'rgba(15, 23, 42, 0.6)',
+                  background: 'var(--app-input-bg)',
                   border: '1px solid var(--border-color)',
                   color: 'var(--text-primary)',
                   fontSize: '0.8125rem',

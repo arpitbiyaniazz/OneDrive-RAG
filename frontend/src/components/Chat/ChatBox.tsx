@@ -12,6 +12,8 @@ import {
   Bot,
   Sparkles,
   PanelLeftOpen,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { ChatMessage, Citation } from '../../types';
@@ -24,6 +26,8 @@ interface ChatBoxProps {
   userName?: string;
   isSidebarOpen?: boolean;
   onOpenSidebar?: () => void;
+  theme?: 'dark' | 'light';
+  onToggleTheme?: () => void;
 }
 
 export function ChatBox({
@@ -33,6 +37,8 @@ export function ChatBox({
   userName = 'there',
   isSidebarOpen = true,
   onOpenSidebar,
+  theme = 'dark',
+  onToggleTheme,
 }: ChatBoxProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputQuery, setInputQuery] = useState<string>('');
@@ -339,7 +345,7 @@ export function ChatBox({
           justifyContent: 'space-between',
           padding: '0.85rem 1.5rem',
           borderBottom: '1px solid var(--app-border)',
-          background: 'rgba(10, 13, 20, 0.75)',
+          background: 'var(--app-header-bg)',
           backdropFilter: 'blur(10px)',
           zIndex: 10,
         }}
@@ -476,35 +482,76 @@ export function ChatBox({
           </div>
         </div>
 
-        {/* Right shortcut: Manage Knowledge Base Drawer */}
-        <button
-          onClick={onOpenKnowledgeDrawer}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.45rem',
-            padding: '0.4rem 0.85rem',
-            background: 'var(--app-surface)',
-            border: '1px solid var(--app-border)',
-            borderRadius: 'var(--radius-full)',
-            color: 'var(--app-text-secondary)',
-            fontSize: '0.78rem',
-            fontWeight: 600,
-            cursor: 'pointer',
-            transition: 'all 0.15s ease',
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.borderColor = 'var(--brand-primary)';
-            e.currentTarget.style.color = '#38bdf8';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.borderColor = 'var(--app-border)';
-            e.currentTarget.style.color = 'var(--app-text-secondary)';
-          }}
-        >
-          <Database size={13} color="var(--brand-cyan)" />
-          <span>Knowledge & Cloud Drive</span>
-        </button>
+        {/* Right Section: Theme Toggle + Knowledge Base Drawer */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+          {onToggleTheme && (
+            <button
+              onClick={onToggleTheme}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.45rem',
+                padding: '0.4rem 0.8rem',
+                background: 'var(--app-surface)',
+                border: '1px solid var(--app-border)',
+                borderRadius: 'var(--radius-full)',
+                color: 'var(--app-text)',
+                fontSize: '0.78rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
+              }}
+              title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} mode`}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.borderColor = 'var(--brand-primary)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.borderColor = 'var(--app-border)';
+              }}
+            >
+              {theme === 'dark' ? (
+                <>
+                  <Sun size={14} color="#f59e0b" />
+                  <span>Light</span>
+                </>
+              ) : (
+                <>
+                  <Moon size={14} color="#0284c7" />
+                  <span>Dark</span>
+                </>
+              )}
+            </button>
+          )}
+
+          <button
+            onClick={onOpenKnowledgeDrawer}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.45rem',
+              padding: '0.4rem 0.85rem',
+              background: 'var(--app-surface)',
+              border: '1px solid var(--app-border)',
+              borderRadius: 'var(--radius-full)',
+              color: 'var(--app-text-secondary)',
+              fontSize: '0.78rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.15s ease',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.borderColor = 'var(--brand-primary)';
+              e.currentTarget.style.color = 'var(--brand-cyan)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.borderColor = 'var(--app-border)';
+              e.currentTarget.style.color = 'var(--app-text-secondary)';
+            }}
+          >
+            <Database size={13} color="var(--brand-cyan)" />
+            <span>Knowledge & Cloud Drive</span>
+          </button>
+        </div>
       </div>
 
       {/* Main Conversation Stream Viewport */}
@@ -641,13 +688,14 @@ export function ChatBox({
                       <div
                         style={{
                           maxWidth: '82%',
-                          background: 'linear-gradient(135deg, rgba(0, 120, 212, 0.25) 0%, rgba(6, 182, 212, 0.15) 100%)',
-                          border: '1px solid rgba(0, 120, 212, 0.35)',
+                          background: 'var(--user-msg-bg)',
+                          border: '1px solid var(--user-msg-border)',
                           borderRadius: '20px',
                           padding: '0.9rem 1.25rem',
-                          color: '#ffffff',
+                          color: 'var(--app-text)',
                           fontSize: '0.95rem',
                           lineHeight: '1.6',
+                          boxShadow: 'var(--card-shadow)',
                         }}
                       >
                         {msg.content}
@@ -681,7 +729,7 @@ export function ChatBox({
                           style={{
                             fontSize: '0.85rem',
                             fontWeight: 700,
-                            color: '#38bdf8',
+                            color: 'var(--brand-cyan)',
                             marginBottom: '0.4rem',
                           }}
                         >
@@ -805,7 +853,7 @@ export function ChatBox({
             background: 'var(--app-input-bg)',
             border: '1px solid var(--app-border)',
             borderRadius: 'var(--radius-xl)',
-            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5)',
+            boxShadow: 'var(--input-shadow)',
             padding: '0.75rem 1rem',
             display: 'flex',
             flexDirection: 'column',
@@ -853,7 +901,7 @@ export function ChatBox({
                 alignItems: 'center',
                 gap: '0.35rem',
                 padding: '0.25rem 0.65rem',
-                background: 'rgba(255, 255, 255, 0.05)',
+                background: 'var(--brand-bg)',
                 border: '1px solid var(--app-border)',
                 borderRadius: 'var(--radius-full)',
                 color: 'var(--app-text-secondary)',

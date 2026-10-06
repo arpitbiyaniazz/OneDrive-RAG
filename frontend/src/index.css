@@ -1,11 +1,12 @@
 :root {
-  /* Enterprise Midnight Blue & Cyan Palette */
+  /* Enterprise Midnight Blue & Cyan Palette (Dark Mode - Default) */
   --app-bg: #0a0d14;
   --app-sidebar: #0e1320;
   --app-sidebar-hover: rgba(255, 255, 255, 0.05);
   --app-surface: #141a29;
   --app-surface-hover: #1b2337;
   --app-input-bg: #111726;
+  --app-header-bg: rgba(10, 13, 20, 0.85);
   --app-border: rgba(255, 255, 255, 0.08);
   --app-border-hover: rgba(0, 120, 212, 0.35);
   --app-border-active: rgba(0, 120, 212, 0.6);
@@ -22,6 +23,13 @@
   --brand-bg: rgba(0, 120, 212, 0.14);
   --brand-glow: rgba(0, 120, 212, 0.35);
   --cyan-glow: rgba(6, 182, 212, 0.25);
+
+  --user-msg-bg: linear-gradient(135deg, rgba(0, 120, 212, 0.25) 0%, rgba(6, 182, 212, 0.15) 100%);
+  --user-msg-border: rgba(0, 120, 212, 0.4);
+  --input-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  --card-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  --login-bg: radial-gradient(ellipse at 50% 10%, #172554 0%, #0a0d14 65%);
+  --login-hero-title: linear-gradient(135deg, #ffffff 0%, #cbd5e1 50%, #94a3b8 100%);
 
   /* Cloud provider accents */
   --onedrive-blue: #0078d4;
@@ -48,6 +56,56 @@
 
   --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', Menlo, monospace;
+}
+
+/* =========================================================================
+   Light Theme Tokens (Enterprise Slate & Azure Clean Aesthetic)
+   ========================================================================= */
+[data-theme="light"] {
+  --app-bg: #f8fafc;
+  --app-sidebar: #ffffff;
+  --app-sidebar-hover: #f1f5f9;
+  --app-surface: #ffffff;
+  --app-surface-hover: #f8fafc;
+  --app-input-bg: #ffffff;
+  --app-header-bg: rgba(255, 255, 255, 0.88);
+  --app-border: #e2e8f0;
+  --app-border-hover: rgba(0, 120, 212, 0.5);
+  --app-border-active: rgba(0, 120, 212, 0.8);
+
+  --app-text: #0f172a;
+  --app-text-secondary: #475569;
+  --app-text-muted: #64748b;
+
+  --brand-primary: #0078d4;
+  --brand-cyan: #0284c7;
+  --brand-hover: #0266b3;
+  --brand-gradient: linear-gradient(135deg, #0078d4 0%, #0284c7 100%);
+  --brand-bg: rgba(0, 120, 212, 0.08);
+  --brand-glow: rgba(0, 120, 212, 0.16);
+  --cyan-glow: rgba(2, 132, 199, 0.12);
+
+  --user-msg-bg: linear-gradient(135deg, #eff6ff 0%, #f0fdf4 100%);
+  --user-msg-border: rgba(0, 120, 212, 0.28);
+  --input-shadow: 0 4px 24px rgba(15, 23, 42, 0.08);
+  --card-shadow: 0 2px 12px rgba(15, 23, 42, 0.06);
+  --login-bg: radial-gradient(ellipse at 50% 10%, #dbeafe 0%, #f8fafc 65%);
+  --login-hero-title: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%);
+
+  --onedrive-blue: #0078d4;
+  --onedrive-blue-bg: rgba(0, 120, 212, 0.1);
+  --gdrive-green: #059669;
+  --gdrive-green-bg: rgba(16, 185, 129, 0.12);
+
+  --bg-primary: var(--app-bg);
+  --bg-secondary: var(--app-sidebar);
+  --bg-tertiary: var(--app-surface);
+  --bg-card: var(--app-surface);
+  --bg-card-hover: var(--app-surface-hover);
+  --border-color: var(--app-border);
+  --text-primary: var(--app-text);
+  --text-secondary: var(--app-text-secondary);
+  --text-muted: var(--app-text-muted);
 }
 
 * {
@@ -287,3 +345,100 @@ body {
 .animate-pulse-glow {
   animation: pulseGlow 2s infinite ease-in-out;
 }
+
+/* =========================================================================
+   Light Theme Component Overrides
+   ========================================================================= */
+[data-theme="light"] body {
+  background-color: var(--app-bg);
+  color: var(--app-text);
+}
+
+[data-theme="light"] .glass-panel {
+  background: var(--app-surface);
+  border-color: var(--app-border);
+  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.05);
+}
+
+[data-theme="light"] .glass-card {
+  background: var(--app-surface);
+  border-color: var(--app-border);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+}
+
+[data-theme="light"] .glass-card:hover {
+  background: var(--app-surface-hover);
+  border-color: var(--app-border-hover);
+  box-shadow: 0 4px 16px rgba(0, 120, 212, 0.12);
+}
+
+[data-theme="light"] .btn-secondary {
+  background: #f1f5f9;
+  color: var(--app-text);
+  border-color: var(--app-border);
+}
+
+[data-theme="light"] .btn-secondary:hover {
+  background: #e2e8f0;
+  border-color: rgba(0, 120, 212, 0.4);
+}
+
+[data-theme="light"] .prose {
+  color: #1e293b;
+}
+
+[data-theme="light"] .prose h1,
+[data-theme="light"] .prose h2,
+[data-theme="light"] .prose h3,
+[data-theme="light"] .prose h4 {
+  color: #0f172a;
+}
+
+[data-theme="light"] .prose p,
+[data-theme="light"] .prose li {
+  color: #334155;
+}
+
+[data-theme="light"] .prose pre {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.03);
+}
+
+[data-theme="light"] .prose pre code {
+  color: #0f172a;
+}
+
+[data-theme="light"] .prose code {
+  background: rgba(0, 120, 212, 0.08);
+  border: 1px solid rgba(0, 120, 212, 0.2);
+  color: #0369a1;
+}
+
+[data-theme="light"] .prose blockquote {
+  border-left-color: var(--brand-primary);
+  color: #475569;
+  background: rgba(0, 120, 212, 0.04);
+  padding: 0.5rem 0.85rem;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+[data-theme="light"] .prose th {
+  background: #f1f5f9;
+  color: #0f172a;
+  border-color: #e2e8f0;
+}
+
+[data-theme="light"] .prose td {
+  border-color: #e2e8f0;
+  color: #334155;
+}
+
+[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.16);
+}
+
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 23, 42, 0.28);
+}
+
