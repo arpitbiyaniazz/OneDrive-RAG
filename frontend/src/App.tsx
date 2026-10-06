@@ -7,7 +7,6 @@ import {
   FolderSync,
   LogOut,
   PanelLeftClose,
-  PanelLeftOpen,
   X,
   CheckCircle2,
 } from 'lucide-react';
@@ -625,42 +624,14 @@ export function App() {
           background: 'var(--app-bg)',
         }}
       >
-        {/* Toggle Sidebar Button (shown when sidebar is closed) */}
-        {!isSidebarOpen && (
-          <button
-            onClick={() => setIsSidebarOpen(true)}
-            style={{
-              position: 'absolute',
-              top: '0.85rem',
-              left: '1rem',
-              zIndex: 40,
-              background: 'var(--app-surface)',
-              border: '1px solid var(--app-border)',
-              borderRadius: 'var(--radius-md)',
-              color: 'var(--app-text-secondary)',
-              cursor: 'pointer',
-              padding: '6px 8px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.45rem',
-              fontSize: '0.8rem',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
-            }}
-            title="Open sidebar"
-            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--app-text)')}
-            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--app-text-secondary)')}
-          >
-            <PanelLeftOpen size={16} />
-            <span style={{ color: 'var(--brand-cyan)', fontWeight: 700 }}>Enterprise Cloud RAG</span>
-          </button>
-        )}
-
         {/* Clean Conversational Chat Experience */}
         <ChatBox
           sessionId={sessionId}
           onSessionChange={handleSessionChange}
           onOpenKnowledgeDrawer={() => setIsKnowledgeDrawerOpen(true)}
           userName={currentUser?.full_name?.split(' ')[0] || 'there'}
+          isSidebarOpen={isSidebarOpen}
+          onOpenSidebar={() => setIsSidebarOpen(true)}
         />
       </main>
 

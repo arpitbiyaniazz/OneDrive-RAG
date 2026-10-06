@@ -13,6 +13,7 @@ import {
   StopCircle,
   Bot,
   Sparkles,
+  PanelLeftOpen,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { ChatMessage, Citation } from '../../types';
@@ -23,6 +24,8 @@ interface ChatBoxProps {
   onSessionChange: (newSessionId: string, firstQuery?: string) => void;
   onOpenKnowledgeDrawer: () => void;
   userName?: string;
+  isSidebarOpen?: boolean;
+  onOpenSidebar?: () => void;
 }
 
 export function ChatBox({
@@ -30,13 +33,15 @@ export function ChatBox({
   onSessionChange,
   onOpenKnowledgeDrawer,
   userName = 'there',
+  isSidebarOpen = true,
+  onOpenSidebar,
 }: ChatBoxProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputQuery, setInputQuery] = useState<string>('');
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [feedbackSent, setFeedbackSent] = useState<Record<string, number>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState<string>('Enterprise RAG (GPT-4o Mini & Hybrid)');
+  const [selectedModel, setSelectedModel] = useState<string>('Enterprise RAG (Mistral AI & Hybrid)');
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState<boolean>(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -341,100 +346,136 @@ export function ChatBox({
           zIndex: 10,
         }}
       >
-        {/* Model Selector dropdown pill */}
-        <div style={{ position: 'relative' }}>
-          <button
-            onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              padding: '0.4rem 0.85rem',
-              background: 'var(--app-surface)',
-              border: '1px solid var(--app-border)',
-              borderRadius: 'var(--radius-md)',
-              color: 'var(--app-text)',
-              fontSize: '0.85rem',
-              fontWeight: 600,
-              cursor: 'pointer',
-              transition: 'all 0.15s ease',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.borderColor = 'var(--brand-primary)';
-            }}
-            onMouseLeave={(e) => {
-              if (!isModelDropdownOpen) {
-                e.currentTarget.style.borderColor = 'var(--app-border)';
-              }
-            }}
-          >
-            <div
+        {/* Left Section: Sidebar Open Toggle (when collapsed) + Model Selector dropdown pill */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          {!isSidebarOpen && onOpenSidebar && (
+            <button
+              onClick={onOpenSidebar}
               style={{
-                width: '18px',
-                height: '18px',
-                borderRadius: '4px',
-                background: 'var(--brand-gradient)',
                 display: 'flex',
                 alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <Bot size={11} color="#ffffff" />
-            </div>
-            <span>{selectedModel}</span>
-            <ChevronDown size={14} color="var(--app-text-muted)" />
-          </button>
-
-          {isModelDropdownOpen && (
-            <div
-              style={{
-                position: 'absolute',
-                top: 'calc(100% + 6px)',
-                left: 0,
-                width: '280px',
+                gap: '0.45rem',
+                padding: '0.4rem 0.75rem',
                 background: 'var(--app-surface)',
                 border: '1px solid var(--app-border)',
                 borderRadius: 'var(--radius-md)',
-                boxShadow: '0 10px 30px rgba(0,0,0,0.6)',
-                padding: '0.4rem',
-                zIndex: 50,
+                color: 'var(--app-text-secondary)',
+                fontSize: '0.825rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
+              }}
+              title="Open sidebar"
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = 'var(--app-text)';
+                e.currentTarget.style.borderColor = 'var(--brand-primary)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = 'var(--app-text-secondary)';
+                e.currentTarget.style.borderColor = 'var(--app-border)';
               }}
             >
-              {[
-                { name: 'Enterprise RAG (GPT-4o Mini & Hybrid)', desc: 'Optimized speed & multi-cloud retrieval' },
-                { name: 'Enterprise RAG High-Precision (GPT-4o)', desc: 'Deep synthesis & complex table analysis' },
-              ].map((model) => (
-                <div
-                  key={model.name}
-                  onClick={() => {
-                    setSelectedModel(model.name);
-                    setIsModelDropdownOpen(false);
-                  }}
-                  style={{
-                    padding: '0.55rem 0.75rem',
-                    borderRadius: 'var(--radius-sm)',
-                    cursor: 'pointer',
-                    background: selectedModel === model.name ? 'var(--brand-bg)' : 'transparent',
-                    border: selectedModel === model.name ? '1px solid rgba(0, 120, 212, 0.4)' : '1px solid transparent',
-                    marginBottom: '0.2rem',
-                  }}
-                  onMouseEnter={(e) => {
-                    if (selectedModel !== model.name) e.currentTarget.style.background = 'var(--app-surface-hover)';
-                  }}
-                  onMouseLeave={(e) => {
-                    if (selectedModel !== model.name) e.currentTarget.style.background = 'transparent';
-                  }}
-                >
-                  <div style={{ fontSize: '0.825rem', fontWeight: 600, color: 'var(--app-text)' }}>
-                    {model.name}
-                  </div>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--app-text-muted)' }}>
-                    {model.desc}
-                  </div>
-                </div>
-              ))}
-            </div>
+              <PanelLeftOpen size={16} />
+              <span style={{ color: 'var(--brand-cyan)', fontWeight: 700 }}>Enterprise Cloud RAG</span>
+            </button>
           )}
+
+          {/* Model Selector dropdown pill */}
+          <div style={{ position: 'relative' }}>
+            <button
+              onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                padding: '0.4rem 0.85rem',
+                background: 'var(--app-surface)',
+                border: '1px solid var(--app-border)',
+                borderRadius: 'var(--radius-md)',
+                color: 'var(--app-text)',
+                fontSize: '0.85rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.borderColor = 'var(--brand-primary)';
+              }}
+              onMouseLeave={(e) => {
+                if (!isModelDropdownOpen) {
+                  e.currentTarget.style.borderColor = 'var(--app-border)';
+                }
+              }}
+            >
+              <div
+                style={{
+                  width: '18px',
+                  height: '18px',
+                  borderRadius: '4px',
+                  background: 'var(--brand-gradient)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Bot size={11} color="#ffffff" />
+              </div>
+              <span>{selectedModel}</span>
+              <ChevronDown size={14} color="var(--app-text-muted)" />
+            </button>
+
+            {isModelDropdownOpen && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 6px)',
+                  left: 0,
+                  width: '280px',
+                  background: 'var(--app-surface)',
+                  border: '1px solid var(--app-border)',
+                  borderRadius: 'var(--radius-md)',
+                  boxShadow: '0 10px 30px rgba(0,0,0,0.6)',
+                  padding: '0.4rem',
+                  zIndex: 50,
+                }}
+              >
+                {[
+                  { name: 'Enterprise RAG (Mistral AI & Hybrid)', desc: 'Fast, high-efficiency enterprise reasoning' },
+                  { name: 'Enterprise RAG (GPT-4o Mini & Hybrid)', desc: 'Optimized speed & multi-cloud retrieval' },
+                  { name: 'Enterprise RAG High-Precision (GPT-4o)', desc: 'Deep synthesis & complex table analysis' },
+                ].map((model) => (
+                  <div
+                    key={model.name}
+                    onClick={() => {
+                      setSelectedModel(model.name);
+                      setIsModelDropdownOpen(false);
+                    }}
+                    style={{
+                      padding: '0.55rem 0.75rem',
+                      borderRadius: 'var(--radius-sm)',
+                      cursor: 'pointer',
+                      background: selectedModel === model.name ? 'var(--brand-bg)' : 'transparent',
+                      border: selectedModel === model.name ? '1px solid rgba(0, 120, 212, 0.4)' : '1px solid transparent',
+                      marginBottom: '0.2rem',
+                    }}
+                    onMouseEnter={(e) => {
+                      if (selectedModel !== model.name) e.currentTarget.style.background = 'var(--app-surface-hover)';
+                    }}
+                    onMouseLeave={(e) => {
+                      if (selectedModel !== model.name) e.currentTarget.style.background = 'transparent';
+                    }}
+                  >
+                    <div style={{ fontSize: '0.825rem', fontWeight: 600, color: 'var(--app-text)' }}>
+                      {model.name}
+                    </div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--app-text-muted)' }}>
+                      {model.desc}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Right shortcut: Manage Knowledge Base Drawer */}
