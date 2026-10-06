@@ -109,6 +109,8 @@ async def stream_chat(
                     if parsed.get("done"):
                         citations_payload = parsed.get("citations")
                         trace_id = parsed.get("trace_id")
+                        parsed["session_id"] = session_id
+                        chunk = f"data: {json.dumps(parsed)}\n\n"
                 except Exception:
                     pass
 
@@ -204,6 +206,28 @@ async def get_session_messages(
             for m in messages
         ],
     }
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_chat_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Deletes a chat session and all its messages for the current user."""
+    session = await db.get(ChatSession, session_id)
+    if not session or session.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Session not found.")
+
+    stmt = select(ChatMessage).where(ChatMessage.session_id == session_id)
+    res = await db.execute(stmt)
+    msgs = res.scalars().all()
+    for m in msgs:
+        await db.delete(m)
+
+    await db.delete(session)
+    await db.commit()
+    return {"status": "success", "deleted_session_id": session_id}
 
 
 @router.post("/feedback")

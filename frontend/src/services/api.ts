@@ -183,4 +183,33 @@ export async function logoutUser(): Promise<void> {
   await fetch(`${API_BASE}/auth/logout`, { method: 'POST', headers: getAuthHeaders() }).catch(() => {});
 }
 
+export interface ChatSessionResponseItem {
+  id: string;
+  title: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export async function fetchChatSessions(): Promise<ChatSessionResponseItem[]> {
+  const res = await fetch(`${API_BASE}/chat/sessions`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error('Failed to fetch chat sessions');
+  }
+  const data = await res.json();
+  return data.sessions || [];
+}
+
+export async function deleteChatSession(sessionId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/chat/sessions/${sessionId}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error('Failed to delete chat session');
+  }
+}
+
+
 

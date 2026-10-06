@@ -174,6 +174,9 @@ export function ChatBox({
                   );
                 }
                 if (parsed.done) {
+                  if (parsed.session_id && parsed.session_id !== sessionId) {
+                    onSessionChange(parsed.session_id, q);
+                  }
                   extractedCitations = parsed.citations || [];
                   traceId = parsed.trace_id || '';
                   setMessages((prev) =>

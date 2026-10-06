@@ -20,6 +20,8 @@ import {
   exchangeAuthCode,
   exchangeGoogleAuthCode,
   startIngestion,
+  fetchChatSessions,
+  deleteChatSession,
 } from './services/api';
 import { ChatBox } from './components/Chat/ChatBox';
 import { FolderTree } from './components/OneDrive/FolderTree';
@@ -31,6 +33,19 @@ interface ChatSessionItem {
   id: string;
   title: string;
   timestamp: string;
+}
+
+function formatRelativeTime(dateStr?: string | null): string {
+  if (!dateStr) return 'Recently';
+  const date = new Date(dateStr);
+  if (isNaN(date.getTime())) return 'Recently';
+  const now = new Date();
+  const diffSec = Math.floor((now.getTime() - date.getTime()) / 1000);
+  if (diffSec < 60) return 'Just now';
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+  if (diffSec < 172800) return 'Yesterday';
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 export function App() {
@@ -98,6 +113,29 @@ export function App() {
     initApp();
   }, []);
 
+  async function loadUserSessions() {
+    try {
+      const data = await fetchChatSessions();
+      setSessions(
+        data.map((s) => ({
+          id: s.id,
+          title: s.title || 'Untitled Chat',
+          timestamp: formatRelativeTime(s.updated_at || s.created_at),
+        }))
+      );
+    } catch (e) {
+      console.error('Failed to load past chat sessions', e);
+    }
+  }
+
+  useEffect(() => {
+    if (currentUser) {
+      loadUserSessions();
+    } else {
+      setSessions([]);
+    }
+  }, [currentUser]);
+
   function handleNewChat() {
     setSessionId(null);
   }
@@ -112,13 +150,20 @@ export function App() {
         return [{ id: newSessionId, title, timestamp: 'Just now' }, ...prev];
       });
     }
+    // Re-sync with backend to get persisted title and updated timestamp
+    loadUserSessions();
   }
 
-  function handleDeleteSession(e: React.MouseEvent, idToDelete: string) {
+  async function handleDeleteSession(e: React.MouseEvent, idToDelete: string) {
     e.stopPropagation();
     setSessions((prev) => prev.filter((s) => s.id !== idToDelete));
     if (sessionId === idToDelete) {
       setSessionId(null);
+    }
+    try {
+      await deleteChatSession(idToDelete);
+    } catch (err) {
+      console.error('Failed to delete chat session on backend', err);
     }
   }
 
@@ -296,73 +341,94 @@ export function App() {
               Recent Chats
             </div>
 
-            {sessions.map((s) => {
-              const isActive = sessionId === s.id;
-              return (
-                <div
-                  key={s.id}
-                  onClick={() => setSessionId(s.id)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '0.55rem 0.75rem',
-                    borderRadius: 'var(--radius-md)',
-                    background: isActive ? 'var(--brand-bg)' : 'transparent',
-                    border: isActive ? '1px solid rgba(0, 120, 212, 0.4)' : '1px solid transparent',
-                    cursor: 'pointer',
-                    transition: 'all 0.15s ease',
-                    color: isActive ? '#60a5fa' : 'var(--app-text-secondary)',
-                  }}
-                  onMouseEnter={(e) => {
-                    if (!isActive) e.currentTarget.style.background = 'var(--app-sidebar-hover)';
-                  }}
-                  onMouseLeave={(e) => {
-                    if (!isActive) e.currentTarget.style.background = 'transparent';
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
-                    <MessageSquare size={14} color={isActive ? '#38bdf8' : 'var(--app-text-muted)'} />
-                    <span
-                      style={{
-                        fontSize: '0.83rem',
-                        fontWeight: isActive ? 600 : 400,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {s.title}
-                    </span>
-                  </div>
-
-                  <button
-                    onClick={(e) => handleDeleteSession(e, s.id)}
+            {sessions.length === 0 ? (
+              <div
+                style={{
+                  padding: '0.6rem 0.75rem',
+                  fontSize: '0.78rem',
+                  color: 'var(--app-text-muted)',
+                  fontStyle: 'italic',
+                }}
+              >
+                No past chats yet
+              </div>
+            ) : (
+              sessions.map((s) => {
+                const isActive = sessionId === s.id;
+                return (
+                  <div
+                    key={s.id}
+                    onClick={() => setSessionId(s.id)}
                     style={{
-                      background: 'transparent',
-                      border: 'none',
-                      color: 'var(--app-text-muted)',
-                      cursor: 'pointer',
-                      padding: '2px',
                       display: 'flex',
                       alignItems: 'center',
-                      opacity: 0.6,
+                      justifyContent: 'space-between',
+                      padding: '0.55rem 0.75rem',
+                      borderRadius: 'var(--radius-md)',
+                      background: isActive ? 'var(--brand-bg)' : 'transparent',
+                      border: isActive ? '1px solid rgba(0, 120, 212, 0.4)' : '1px solid transparent',
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease',
+                      color: isActive ? '#60a5fa' : 'var(--app-text-secondary)',
                     }}
-                    title="Delete chat"
                     onMouseEnter={(e) => {
-                      e.currentTarget.style.color = '#fb7185';
-                      e.currentTarget.style.opacity = '1';
+                      if (!isActive) e.currentTarget.style.background = 'var(--app-sidebar-hover)';
                     }}
                     onMouseLeave={(e) => {
-                      e.currentTarget.style.color = 'var(--app-text-muted)';
-                      e.currentTarget.style.opacity = '0.6';
+                      if (!isActive) e.currentTarget.style.background = 'transparent';
                     }}
                   >
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              );
-            })}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
+                      <MessageSquare size={14} color={isActive ? '#38bdf8' : 'var(--app-text-muted)'} style={{ flexShrink: 0 }} />
+                      <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
+                        <span
+                          style={{
+                            fontSize: '0.83rem',
+                            fontWeight: isActive ? 600 : 400,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {s.title}
+                        </span>
+                        {s.timestamp && (
+                          <span style={{ fontSize: '0.68rem', color: 'var(--app-text-muted)', marginTop: '1px' }}>
+                            {s.timestamp}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={(e) => handleDeleteSession(e, s.id)}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: 'var(--app-text-muted)',
+                        cursor: 'pointer',
+                        padding: '2px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        opacity: 0.6,
+                        flexShrink: 0,
+                      }}
+                      title="Delete chat"
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.color = '#fb7185';
+                        e.currentTarget.style.opacity = '1';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.color = 'var(--app-text-muted)';
+                        e.currentTarget.style.opacity = '0.6';
+                      }}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                );
+              })
+            )}
           </div>
 
           {/* Cloud Storage Knowledge Shortcut Card */}
