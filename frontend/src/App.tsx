@@ -41,18 +41,7 @@ export function App() {
 
   // Conversational Chatbot Session Management
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [sessions, setSessions] = useState<ChatSessionItem[]>([
-    {
-      id: 'session_demo_1',
-      title: 'Executive Briefing Q3 Summary',
-      timestamp: 'Just now',
-    },
-    {
-      id: 'session_demo_2',
-      title: 'Cloud Infrastructure Budget Analysis',
-      timestamp: 'Earlier today',
-    },
-  ]);
+  const [sessions, setSessions] = useState<ChatSessionItem[]>([]);
 
   // Sidebar and Slide-over Drawer
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
