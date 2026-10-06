@@ -1,10 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   ArrowUp,
-  ExternalLink,
   ThumbsUp,
   ThumbsDown,
-  FileText,
   Check,
   Copy,
   FolderSync,
@@ -701,96 +699,6 @@ export function ChatBox({
                             </div>
                           )}
                         </div>
-
-                        {/* Grounded Citations */}
-                        {msg.citations && msg.citations.length > 0 && (
-                          <div
-                            style={{
-                              marginTop: '1.25rem',
-                              paddingTop: '0.85rem',
-                              borderTop: '1px solid var(--app-border)',
-                            }}
-                          >
-                            <div
-                              style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '0.4rem',
-                                marginBottom: '0.6rem',
-                              }}
-                            >
-                              <Sparkles size={13} color="var(--brand-cyan)" />
-                              <span
-                                style={{
-                                  fontSize: '0.8rem',
-                                  fontWeight: 700,
-                                  textTransform: 'uppercase',
-                                  letterSpacing: '0.04em',
-                                  color: 'var(--app-text-secondary)',
-                                }}
-                              >
-                                Grounded Sources
-                              </span>
-                            </div>
-
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem' }}>
-                              {msg.citations.map((cite) => {
-                                const isGDrive = cite.drive_type === 'google_drive';
-                                return (
-                                  <a
-                                    key={cite.source_id}
-                                    href={cite.onedrive_url || '#'}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    style={{
-                                      display: 'inline-flex',
-                                      alignItems: 'center',
-                                      gap: '0.5rem',
-                                      padding: '0.45rem 0.8rem',
-                                      background: isGDrive ? 'var(--gdrive-green-bg)' : 'var(--onedrive-blue-bg)',
-                                      border: isGDrive ? '1px solid rgba(16, 185, 129, 0.35)' : '1px solid rgba(0, 120, 212, 0.4)',
-                                      borderRadius: 'var(--radius-sm)',
-                                      color: isGDrive ? '#6ee7b7' : '#93c5fd',
-                                      fontSize: '0.85rem',
-                                      fontWeight: 600,
-                                      textDecoration: 'none',
-                                      transition: 'all 0.15s ease',
-                                    }}
-                                    onMouseEnter={(e) => {
-                                      e.currentTarget.style.borderColor = isGDrive ? 'rgba(16, 185, 129, 0.75)' : 'rgba(0, 120, 212, 0.8)';
-                                      e.currentTarget.style.boxShadow = isGDrive ? '0 2px 10px rgba(16, 185, 129, 0.2)' : '0 2px 10px rgba(0, 120, 212, 0.25)';
-                                    }}
-                                    onMouseLeave={(e) => {
-                                      e.currentTarget.style.borderColor = isGDrive ? 'rgba(16, 185, 129, 0.35)' : 'rgba(0, 120, 212, 0.4)';
-                                      e.currentTarget.style.boxShadow = 'none';
-                                    }}
-                                  >
-                                    <FileText size={14} />
-                                    <span
-                                      style={{
-                                        fontSize: '0.75rem',
-                                        fontWeight: 700,
-                                        textTransform: 'uppercase',
-                                        letterSpacing: '0.02em',
-                                        padding: '2px 6px',
-                                        borderRadius: '4px',
-                                        background: isGDrive ? 'rgba(16, 185, 129, 0.18)' : 'rgba(0, 120, 212, 0.2)',
-                                      }}
-                                    >
-                                      {isGDrive ? 'G-Drive' : 'OneDrive'}
-                                    </span>
-                                    <span>
-                                      [{cite.source_id}] {cite.filename}
-                                      {cite.page && ` • P.${cite.page}`}
-                                      {cite.section && ` • ${cite.section}`}
-                                    </span>
-                                    <ExternalLink size={12} style={{ opacity: 0.7 }} />
-                                  </a>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
 
                         {/* Action buttons (Copy, Feedback) */}
                         <div
