@@ -711,21 +711,29 @@ export function ChatBox({
                               borderTop: '1px solid var(--app-border)',
                             }}
                           >
-                            <span
+                            <div
                               style={{
-                                fontSize: '0.72rem',
-                                fontWeight: 700,
-                                textTransform: 'uppercase',
-                                letterSpacing: '0.05em',
-                                color: 'var(--app-text-muted)',
-                                display: 'block',
-                                marginBottom: '0.5rem',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.4rem',
+                                marginBottom: '0.6rem',
                               }}
                             >
-                              Grounded Sources:
-                            </span>
+                              <Sparkles size={13} color="var(--brand-cyan)" />
+                              <span
+                                style={{
+                                  fontSize: '0.8rem',
+                                  fontWeight: 700,
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '0.04em',
+                                  color: 'var(--app-text-secondary)',
+                                }}
+                              >
+                                Grounded Sources
+                              </span>
+                            </div>
 
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem' }}>
                               {msg.citations.map((cite) => {
                                 const isGDrive = cite.drive_type === 'google_drive';
                                 return (
@@ -737,26 +745,46 @@ export function ChatBox({
                                     style={{
                                       display: 'inline-flex',
                                       alignItems: 'center',
-                                      gap: '0.4rem',
-                                      padding: '0.35rem 0.65rem',
+                                      gap: '0.5rem',
+                                      padding: '0.45rem 0.8rem',
                                       background: isGDrive ? 'var(--gdrive-green-bg)' : 'var(--onedrive-blue-bg)',
-                                      border: isGDrive ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(0, 120, 212, 0.35)',
+                                      border: isGDrive ? '1px solid rgba(16, 185, 129, 0.35)' : '1px solid rgba(0, 120, 212, 0.4)',
                                       borderRadius: 'var(--radius-sm)',
                                       color: isGDrive ? '#6ee7b7' : '#93c5fd',
-                                      fontSize: '0.75rem',
+                                      fontSize: '0.85rem',
                                       fontWeight: 600,
                                       textDecoration: 'none',
                                       transition: 'all 0.15s ease',
                                     }}
+                                    onMouseEnter={(e) => {
+                                      e.currentTarget.style.borderColor = isGDrive ? 'rgba(16, 185, 129, 0.75)' : 'rgba(0, 120, 212, 0.8)';
+                                      e.currentTarget.style.boxShadow = isGDrive ? '0 2px 10px rgba(16, 185, 129, 0.2)' : '0 2px 10px rgba(0, 120, 212, 0.25)';
+                                    }}
+                                    onMouseLeave={(e) => {
+                                      e.currentTarget.style.borderColor = isGDrive ? 'rgba(16, 185, 129, 0.35)' : 'rgba(0, 120, 212, 0.4)';
+                                      e.currentTarget.style.boxShadow = 'none';
+                                    }}
                                   >
-                                    <FileText size={12} />
-                                    <span style={{ opacity: 0.85, fontSize: '0.675rem', textTransform: 'uppercase' }}>
+                                    <FileText size={14} />
+                                    <span
+                                      style={{
+                                        fontSize: '0.75rem',
+                                        fontWeight: 700,
+                                        textTransform: 'uppercase',
+                                        letterSpacing: '0.02em',
+                                        padding: '2px 6px',
+                                        borderRadius: '4px',
+                                        background: isGDrive ? 'rgba(16, 185, 129, 0.18)' : 'rgba(0, 120, 212, 0.2)',
+                                      }}
+                                    >
                                       {isGDrive ? 'G-Drive' : 'OneDrive'}
                                     </span>
-                                    [{cite.source_id}] {cite.filename}
-                                    {cite.page && ` • P.${cite.page}`}
-                                    {cite.section && ` • ${cite.section}`}
-                                    <ExternalLink size={10} />
+                                    <span>
+                                      [{cite.source_id}] {cite.filename}
+                                      {cite.page && ` • P.${cite.page}`}
+                                      {cite.section && ` • ${cite.section}`}
+                                    </span>
+                                    <ExternalLink size={12} style={{ opacity: 0.7 }} />
                                   </a>
                                 );
                               })}
