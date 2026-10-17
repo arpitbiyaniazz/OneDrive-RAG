@@ -1,36 +1,15 @@
-import pytest
-from httpx import ASGITransport, AsyncClient
-from app.main import app
+async def test_liveness(client):
+    res = await client.get("/api/health")
+    assert res.status_code == 200 and res.json()["status"] == "ok"
 
 
-@pytest.mark.asyncio
-async def test_root_endpoint():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        response = await ac.get("/")
-    assert response.status_code == 200
-    data = response.json()
-    assert "version" in data
-    assert "health" in data
+async def test_readiness_checks_the_migrated_database(client):
+    res = await client.get("/api/health/ready")
+    assert res.status_code == 200
+    assert res.json()["schema_revision"] == "0002_production_schema"
 
 
-@pytest.mark.asyncio
-async def test_health_endpoint():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        response = await ac.get("/api/health")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "healthy"
-    assert "project" in data
-
-
-@pytest.mark.asyncio
-async def test_telemetry_status():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        response = await ac.get("/api/telemetry/status")
-    assert response.status_code == 200
-    data = response.json()
-    assert "opentelemetry" in data
-    assert "langfuse" in data
+async def test_responses_carry_request_ids_and_hardening_headers(client):
+    res = await client.get("/api/health", headers={"X-Request-Id": "abc123"})
+    assert res.headers["X-Request-Id"] == "abc123"
+    assert res.headers["X-Content-Type-Options"] == "nosniff"
