@@ -1,13 +1,9 @@
 import uuid
-from datetime import datetime, timezone
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 
-from app.db.database import Base
-
-
-def utcnow():
-    return datetime.now(timezone.utc)
+from app.db.database import Base, utcnow
 
 
 class User(Base):
@@ -18,23 +14,22 @@ class User(Base):
     full_name = Column(String(255), nullable=True)
     microsoft_id = Column(String(255), unique=True, index=True, nullable=True)
     google_id = Column(String(255), unique=True, index=True, nullable=True)
-    is_active = Column(Boolean, default=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    # Incremented on logout to revoke every outstanding session token.
+    token_version = Column(Integer, default=0, nullable=False, server_default="0")
     created_at = Column(DateTime(timezone=True), default=utcnow)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
-    # Relationships
     oauth_accounts = relationship("OAuthAccount", back_populates="user", cascade="all, delete-orphan")
-    documents = relationship("Document", back_populates="user", cascade="all, delete-orphan")
-    chat_sessions = relationship("ChatSession", back_populates="user", cascade="all, delete-orphan")
-    ingestion_jobs = relationship("IngestionJob", back_populates="user", cascade="all, delete-orphan")
 
 
 class OAuthAccount(Base):
     __tablename__ = "oauth_accounts"
+    __table_args__ = (UniqueConstraint("user_id", "provider", name="uq_oauth_user_provider"),)
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    provider = Column(String(50), default="microsoft", nullable=False)
+    provider = Column(String(50), nullable=False)  # microsoft | google
     encrypted_access_token = Column(Text, nullable=False)
     encrypted_refresh_token = Column(Text, nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=True)

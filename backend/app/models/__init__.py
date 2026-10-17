@@ -1,8 +1,8 @@
-from app.models.user import User, OAuthAccount
-from app.models.document import Document
+from app.models.chat import ChatMessage, ChatSession
 from app.models.chunk import DocumentChunk
+from app.models.document import Document
 from app.models.ingestion_job import IngestionJob
-from app.models.chat import ChatSession, ChatMessage
+from app.models.user import OAuthAccount, User
 
 __all__ = [
     "User",
