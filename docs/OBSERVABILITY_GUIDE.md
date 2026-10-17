@@ -106,7 +106,7 @@ When a user query is received:
 
 The system exposes a live diagnostic endpoint at:
 ```http
-GET /api/telemetry/status
+GET /api/health/ready
 ```
 
 Response payload:

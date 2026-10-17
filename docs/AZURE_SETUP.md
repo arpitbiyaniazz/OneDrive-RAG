@@ -1,74 +1,54 @@
-# Microsoft Azure & OneDrive Setup Guide
+# Microsoft OneDrive setup (Entra ID app registration)
 
-This guide details how to register an application in the Microsoft Entra ID (Azure Active Directory) portal to enable real OAuth 2.0 authentication and Microsoft Graph API synchronization with OneDrive.
+The app signs users in with Microsoft and reads files from one top-level OneDrive folder
+(`ONEDRIVE_ROOT_FOLDER`, default `OneDrive-RAG`). It never writes to the drive.
 
----
+## 1. Register the application
 
-## 1. Prerequisites
-- A Microsoft 365 or Azure account with permissions to register applications.
-- Access to OneDrive (Personal, OneDrive for Business, or SharePoint Online).
+1. Open the [Azure portal](https://portal.azure.com) → **Microsoft Entra ID** → **App registrations** → **New registration**.
+2. **Supported account types**: choose who may sign in. For personal OneDrive accounts as well as work
+   accounts pick *Accounts in any organizational directory and personal Microsoft accounts* and keep
+   `MICROSOFT_TENANT_ID=common`. For a single company use your tenant id.
+3. **Redirect URI**: platform **Web**, value `http://localhost:5173/auth/callback`
+   (production: `https://your-domain/auth/callback`). This is the web app's route; the browser hands the
+   code to the backend, which redeems it with the client secret and a PKCE verifier.
 
----
+## 2. Client secret
 
-## 2. Register Application in Microsoft Entra ID
+**Certificates & secrets** → **New client secret**. Copy the value (not the id) into `MICROSOFT_CLIENT_SECRET`.
+Secrets expire; set a reminder to rotate it.
 
-1. Sign in to the [Azure Portal](https://portal.azure.com/) or [Microsoft Entra admin center](https://entra.microsoft.com/).
-2. Navigate to **Identity** > **Applications** > **App registrations**.
-3. Click **+ New registration**.
-4. Configure the application:
-   - **Name**: `OneDrive RAG Platform`
-   - **Supported account types**:
-     - *Accounts in any organizational directory and personal Microsoft accounts* (recommended for multi-tenant or hybrid use)
-     - OR *Accounts in this organizational directory only* (for internal enterprise tenant)
-   - **Redirect URI (optional)**:
-     - Platform: **Web**
-     - Redirect URI: `http://localhost:8000/api/auth/callback` (or your production domain e.g. `https://api.yourdomain.com/api/auth/callback`)
-5. Click **Register**.
+## 3. API permissions (delegated)
 
----
+| Permission | Why |
+| --- | --- |
+| `openid`, `profile`, `email`, `offline_access` | sign-in and refresh tokens |
+| `User.Read` | display name and stable user id |
+| `Files.Read` | read the signed-in user's own OneDrive files |
 
-## 3. Configure API Permissions (Microsoft Graph)
+`Files.Read.All` is not needed: the app only reads the user's own root folder.
 
-1. In your registered app, navigate to **API permissions** in the sidebar.
-2. Click **+ Add a permission** > select **Microsoft Graph** > **Delegated permissions**.
-3. Add the following permissions:
-   - `User.Read`: Sign in and read user profile.
-   - `Files.Read.All`: Read all files that the user can access on OneDrive and SharePoint.
-   - `offline_access`: Maintain access to data even when the user is not actively present (enables refresh tokens).
-4. Click **Add permissions**.
-5. (Optional, Enterprise only): Click **Grant admin consent for [Tenant Name]** if required by your tenant policy.
+## 4. Configure the backend
 
----
-
-## 4. Generate Client Secret
-
-1. In the sidebar, select **Certificates & secrets** > **Client secrets** tab.
-2. Click **+ New client secret**.
-3. Enter a description (e.g. `OneDrive RAG Backend Secret`) and select an expiration period (e.g. 180 days).
-4. Click **Add**.
-5. **CRITICAL**: Copy the **Value** immediately. (Azure will never display this value again after you leave the page).
-
----
-
-## 5. Configure Backend `.env`
-
-Copy the credentials from Azure into your `.env` file:
-
-```env
-# Microsoft OAuth & Graph API
-MICROSOFT_CLIENT_ID="<Application (client) ID from Overview tab>"
-MICROSOFT_CLIENT_SECRET="<Client Secret Value from Step 4>"
-MICROSOFT_TENANT_ID="common" # or your specific tenant ID
-MICROSOFT_REDIRECT_URI="http://localhost:8000/api/auth/callback"
-
-# Set to false to switch from local mock sandbox to live Microsoft Graph API
+```bash
+MICROSOFT_CLIENT_ID=<application (client) id>
+MICROSOFT_CLIENT_SECRET=<secret value>
+MICROSOFT_TENANT_ID=common
+MICROSOFT_REDIRECT_URI=http://localhost:5173/auth/callback
+ONEDRIVE_ROOT_FOLDER=OneDrive-RAG
 DEV_MOCK_ONEDRIVE=false
 ```
 
----
+## 5. Prepare the drive
 
-## 6. Verification Checklist
-- [x] Backend responds with redirect URL on `GET /api/auth/login`.
-- [x] Microsoft login prompt asks for user consent to read OneDrive files.
-- [x] Successful callback receives authorization code, exchanges it for access/refresh tokens, and redirects to frontend with session JWT.
-- [x] `GET /api/onedrive/tree` lists real user folders and files from OneDrive root.
+Create a folder named `OneDrive-RAG` at the top level of the OneDrive and put the documents to index in it
+(subfolders are fine). The app does not create it because it only has read access.
+
+## 6. Check
+
+- **Sign in with Microsoft** on the login page → consent screen → back in the app.
+- The drive browser lists the contents of `OneDrive-RAG`. "Create a folder named ..." means the folder is missing.
+- If the browser asks to reconnect, the refresh token was revoked or expired: sign in again.
+
+Accounts are matched by the Microsoft user id, never by e-mail address. A user who first signed in with
+Google can add OneDrive from the drive browser (**Connect OneDrive**) while signed in.

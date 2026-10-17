@@ -51,3 +51,4 @@ postgres_data/
 .idea/
 .vscode/
 *.swp
+.ruff_cache/

@@ -1,148 +1,89 @@
-# OneDrive Metadata-Aware RAG Platform
+# Cloud Drive RAG Assistant
 
-A production-ready enterprise RAG (Retrieval-Augmented Generation) chatbot designed for Microsoft OneDrive documents, featuring **Dual-Branch Observability (OpenTelemetry + Langfuse)**, multi-tenant isolation, grounded streaming responses with clickable citations, and incremental synchronization.
-
----
-
-## 🌟 Key Architecture & Capabilities
+Chat with your own OneDrive and Google Drive documents. Answers are generated only from the indexed
+files, and every statement links to the passage it came from.
 
 ```
-                            RAG APPLICATION
-                                  │
-                      ┌───────────┴───────────┐
-                      │                       │
-                      ▼                       ▼
-                OpenTelemetry              Langfuse
-                      │                       │
-                      │                       ├── LLM traces
-                      │                       ├── RAG traces
-                      │                       ├── Token usage & cost
-                      │                       ├── Evaluations
-                      │                       ├── Prompt versions
-                      │                       └── RAG experiments
-                      │
-                      ├── API traces
-                      ├── DB latency
-                      ├── OneDrive API calls
-                      ├── Worker latency
-                      └── System metrics
+OneDrive / Google Drive ──► connectors ──► parse ──► chunk ──► embed ──► Postgres + pgvector
+                                                                              │
+question ──► rewrite follow-ups ──► hybrid search (vector + full text, RRF) ──┘
+         ──► grounded prompt ──► streamed answer with [n] source links
 ```
 
-- **Dual-Branch Observability**:
-  - **OpenTelemetry**: Distributed tracing for FastAPI HTTP endpoints, SQLAlchemy / pgvector query latencies, Microsoft Graph API network calls, and async background workers.
-  - **Langfuse**: LLM traces, token usage, cost attribution, prompt versioning (`v1`, `v2`), A/B experiments, and automated evaluation metrics (`faithfulness`, `context_recall`, `citation_accuracy`).
-  - **Correlation Bridge**: Each Langfuse trace includes the active OpenTelemetry `trace_id` as metadata for unified infrastructure-to-LLM debugging.
-- **Microsoft OneDrive & Google Drive Multi-Cloud Integrations**:
-  - Full Microsoft Entra ID and Google Cloud OAuth 2.0 flow with PKCE and AES-256 token encryption at rest.
-  - Multi-format document extractors: **PDF** (PyMuPDF), **DOCX** (python-docx), **XLSX** (openpyxl), **PPTX** (python-pptx), and **TXT**.
-  - On-the-fly conversion of native Google Workspace documents: **Google Docs** (.docx), **Google Sheets** (.xlsx), and **Google Slides** (.pptx).
-  - Built-in `MockOneDriveProvider` and `MockGoogleDriveProvider` allowing 100% full-stack sandbox development and testing without requiring live cloud credentials.
-- **pgvector & Structure-Aware Chunking**:
-  - Semantic vector storage with 1536-dimensional embeddings.
-  - Preserves document hierarchy, page numbers, section headers, and folder paths.
-  - Strict SQL multi-tenancy (`WHERE user_id = :current_user_id`).
-- **Grounded Streaming Chat & Anti-Jailbreak Protection**:
-  - Real-time Server-Sent Events (SSE) token streaming.
-  - Prompt injection quarantine: external document text is quarantined within `<untrusted_reference_document>` tags.
-  - Verified clickable citations linking directly back to OneDrive file URLs.
-- **Incremental Synchronization**:
-  - SHA-256 hash-based change detection.
-  - Automatically indexes new files, updates modified documents, purges deleted documents, and skips unchanged files.
-- **Automated RAG Evaluation Suite**:
-  - Automated evaluation harness in `backend/app/evals/` benchmarking Faithfulness (Groundedness), Context Recall, Citation Accuracy, and Answer Relevancy.
+## What it does
 
----
+- **Every common document type**: PDF (text, tables, page numbers, section titles from bookmarks),
+  Word (headings, lists, tables in reading order, headers/footers), Excel and CSV (header row repeated in
+  every chunk, real row numbers), PowerPoint (slides, tables, grouped shapes, speaker notes), Google
+  Docs/Sheets/Slides, Markdown, HTML and plain text in any common encoding. Files that cannot be indexed
+  (scanned PDFs without text, legacy `.doc/.xls/.ppt`, images, archives, empty files) are listed with the
+  reason instead of being indexed as garbage.
+- **Retrieval that finds every document**: semantic vectors (HNSW index) fused with Postgres full-text
+  search, so exact names, codes and numbers match too. Questions that name a document focus on it,
+  "summarize X" reads the whole document, and "which documents do I have?" answers from the catalog.
+- **Grounded answers**: the system prompt (`backend/app/prompts.py`) requires citations, says plainly when
+  the documents do not contain the answer, flags conflicting sources, and treats document text as data
+  (prompt-injection resistant). Follow-up questions are rewritten using the conversation.
+- **Production basics**: OAuth with PKCE and state validation, revocable sessions, per-user isolation on
+  every query, durable background jobs in Postgres (safe across restarts and replicas), incremental sync
+  that re-indexes changed files and purges deleted ones, Alembic migrations, health/readiness probes,
+  request ids, OpenTelemetry tracing and Langfuse LLM tracing (both optional).
 
-## 🚀 Quick Start
+## Run locally
 
-### 1. Prerequisites
-- Docker & Docker Compose
-- Python 3.11+ (Python 3.14 verified)
-- Node.js 18+
+Prerequisites: Docker, Python 3.12+, Node 20+.
 
-### 2. Environment Configuration
-Copy `.env.example` to `.env`:
 ```bash
-cp .env.example .env
+cp .env.example .env                 # set SECRET_KEY, TOKEN_ENCRYPTION_KEY, MISTRAL_API_KEY, OAuth apps
+docker compose up -d postgres
+
+cd backend
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements-dev.txt
+alembic upgrade head
+uvicorn app.main:app --reload        # API on :8000, runs the background worker too
+
+cd ../frontend
+npm install && npm run dev           # UI on http://localhost:5173 (proxies /api to :8000)
 ```
 
-### 3. Start Database & Cache
+Without OAuth apps, set `DEV_MOCK_ONEDRIVE=true` / `DEV_MOCK_GDRIVE=true` to use sandbox drives with sample
+files (development only; production refuses to start with them).
+
+Drive setup: [docs/AZURE_SETUP.md](docs/AZURE_SETUP.md), [docs/GOOGLE_SETUP.md](docs/GOOGLE_SETUP.md).
+Put the documents to index in a top-level folder named `OneDrive-RAG` (configurable).
+
+## Run the full stack in containers
+
 ```bash
-docker compose up -d postgres redis
+docker compose up -d --build         # UI + API on http://localhost:8080
 ```
-This starts PostgreSQL 16 with pgvector extension enabled on port `5432` and Redis on port `6379`.
 
-### 4. Setup Backend
+The backend image runs `alembic upgrade head` on start (`RUN_MIGRATIONS=false` to disable) and serves with
+`WEB_CONCURRENCY` uvicorn workers; nginx serves the built UI and proxies `/api` with streaming enabled.
+Set `ENVIRONMENT=production`: the server then refuses default secrets, sandbox drives and mock providers.
+
+## Tests
+
 ```bash
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Run migrations and initialize tables
-python -m app.db.init_db
-
-# Run complete test suite (31 tests)
-pytest tests/ -v
-
-# Start FastAPI server
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+pytest                               # isolated onedrive_rag_test DB, sandbox drives, no network
+RUN_LIVE_TESTS=1 pytest -m live -s   # end-to-end quality check with the real Mistral models
+ruff check app tests migrations
 ```
 
-### 5. Setup Frontend
-```bash
-cd frontend
-npm install
-npm run build
-npm run dev
-```
-Open [http://localhost:5173](http://localhost:5173) in your browser.
+The suite parses a generated corpus covering every supported format and edge case
+(`tests/fixtures/corpus.py`) and checks that every planted fact is extracted, retrievable, and, in the
+live run, answered with valid citations.
 
----
+## Operations
 
-## 🧪 Running Evaluations
+| Task | Command |
+| --- | --- |
+| Re-check all documents of a user | `python -m app.cli sync --email user@example.com` (or the **Sync** button) |
+| Change the embedding model | set `EMBEDDING_MODEL`/`EMBEDDING_DIMENSION`, run `python -m app.cli reset-embeddings`, then `python -m app.cli sync --all` |
+| Process queued jobs without the API | `python -m app.cli run-jobs` |
+| Liveness / readiness | `GET /api/health`, `GET /api/health/ready` |
 
-To run the automated RAG evaluation benchmark and log evaluation scores to Langfuse:
-```bash
-cd backend
-.venv/bin/python -m app.evals.run_evals v2
-```
-
----
-
-## 📁 Repository Structure
-
-```
-.
-├── backend/
-│   ├── app/
-│   │   ├── api/              # FastAPI routers (auth, onedrive, ingestion, chat, sync, health)
-│   │   ├── core/             # Configuration, security, cryptography
-│   │   │   └── telemetry/    # OpenTelemetry & Langfuse setup & decorators
-│   │   ├── db/               # Database engine & pgvector initialization
-│   │   ├── evals/            # Automated evaluation metrics, dataset & runner
-│   │   ├── models/           # SQLAlchemy models (User, Document, DocumentChunk, ChatSession)
-│   │   ├── processors/       # Modular extractors (PDF, DOCX, XLSX, PPTX, TXT)
-│   │   └── services/         # Microsoft Graph, Chunker, Embedding, RAG, Sync
-│   └── tests/                # Comprehensive test suite (31 tests)
-├── frontend/
-│   ├── src/
-│   │   ├── components/       # FolderTree, ChatBox, KnowledgeBaseTable, IngestionModal
-│   │   ├── services/         # API clients
-│   │   └── App.tsx           # Modern Glassmorphic Dashboard
-│   └── package.json
-├── docs/
-│   ├── AZURE_SETUP.md        # Step-by-step Azure Entra ID registration guide
-│   ├── GOOGLE_SETUP.md       # Step-by-step Google Cloud Console & Drive API guide
-│   └── OBSERVABILITY_GUIDE.md # Detailed dual-branch telemetry documentation
-├── docker-compose.yml        # PostgreSQL (pgvector) & Redis services
-└── README.md
-```
-
----
-
-## 🔒 Security & Multi-Tenancy
-
-- **Token Protection**: Refresh tokens are encrypted with AES-256 (Fernet) before writing to the database and never exposed to the client.
-- **Tenant Isolation**: Every vector similarity query enforces database-level tenant filtering (`user_id`).
-- **Prompt Injection Defense**: Reference content is enclosed in `<untrusted_reference_document>` tags with strict system instructions prohibiting the execution of text-embedded commands.
+The original requirements are kept in [docs/ORIGINAL_SPEC.md](docs/ORIGINAL_SPEC.md); observability options
+are described in [docs/OBSERVABILITY_GUIDE.md](docs/OBSERVABILITY_GUIDE.md).
