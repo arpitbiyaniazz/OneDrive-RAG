@@ -1,86 +1,117 @@
+import asyncio
 import hashlib
 import logging
 import math
-from abc import ABC, abstractmethod
-from typing import List
-import numpy as np
+import re
+from functools import lru_cache
+from typing import List, Protocol
+
+from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitError
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-
-class EmbeddingProvider(ABC):
-    """Abstract interface for generating vector embeddings."""
-
-    @abstractmethod
-    async def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        pass
-
-    @abstractmethod
-    async def embed_query(self, query: str) -> List[float]:
-        pass
+# Bumped whenever parsing/chunking changes in a way that should trigger re-indexing.
+PIPELINE_VERSION = "pipeline-3"
+_MAX_EMBED_INPUT_CHARS = 8000
+_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
 
-class OpenAIEmbeddingProvider(EmbeddingProvider):
-    """Generates embeddings using OpenAI API (e.g. text-embedding-3-small)."""
+class EmbeddingError(Exception):
+    pass
 
-    def __init__(self, api_key: str, model: str = "text-embedding-3-small"):
-        from openai import AsyncOpenAI
-        self.client = AsyncOpenAI(api_key=api_key)
+
+class EmbeddingProvider(Protocol):
+    model_id: str
+
+    async def embed_documents(self, texts: List[str]) -> List[List[float]]: ...
+
+    async def embed_query(self, text: str) -> List[float]: ...
+
+
+class OpenAICompatibleEmbeddings:
+    """Embeddings over the OpenAI-compatible API (OpenAI or Mistral's /v1/embeddings)."""
+
+    def __init__(self, api_key: str, model: str, base_url: str | None, provider: str):
+        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=60.0, max_retries=0)
         self.model = model
+        self.model_id = f"{provider}:{model}:{settings.EMBEDDING_DIMENSION}"
+
+    async def _embed(self, batch: List[str]) -> List[List[float]]:
+        delay = 2.0
+        for attempt in range(6):
+            try:
+                # encoding_format="float": the SDK defaults to base64, which not every provider honours.
+                res = await self.client.embeddings.create(model=self.model, input=batch, encoding_format="float")
+                vectors = [item.embedding for item in sorted(res.data, key=lambda d: d.index)]
+                if vectors and len(vectors[0]) != settings.EMBEDDING_DIMENSION:
+                    raise EmbeddingError(
+                        f"{self.model} returned {len(vectors[0])}-dim vectors but EMBEDDING_DIMENSION="
+                        f"{settings.EMBEDDING_DIMENSION}"
+                    )
+                return vectors
+            except (RateLimitError, APIConnectionError) as exc:
+                retry = exc
+            except APIStatusError as exc:
+                if exc.status_code < 500:
+                    raise EmbeddingError(f"Embedding request rejected ({exc.status_code}): {exc.message}") from exc
+                retry = exc
+            if attempt == 5:
+                raise EmbeddingError(f"Embedding request failed after retries: {retry}") from retry
+            logger.warning("Embedding call failed (%s), retrying in %.0fs", type(retry).__name__, delay)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30)
+        raise EmbeddingError("unreachable")
 
     async def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        if not texts:
-            return []
-        # Batch in chunks of 64
-        batch_size = 64
-        all_embeddings: List[List[float]] = []
+        out: List[List[float]] = []
+        size = max(1, settings.EMBEDDING_BATCH_SIZE)
+        for i in range(0, len(texts), size):
+            out.extend(await self._embed([t[:_MAX_EMBED_INPUT_CHARS] for t in texts[i:i + size]]))
+        return out
 
-        for i in range(0, len(texts), batch_size):
-            batch = [t[:8000] for t in texts[i:i + batch_size]]  # Token guard
-            res = await self.client.embeddings.create(input=batch, model=self.model)
-            all_embeddings.extend([d.embedding for d in res.data])
-
-        return all_embeddings
-
-    async def embed_query(self, query: str) -> List[float]:
-        res = await self.client.embeddings.create(input=[query[:8000]], model=self.model)
-        return res.data[0].embedding
+    async def embed_query(self, text: str) -> List[float]:
+        return (await self._embed([text[:_MAX_EMBED_INPUT_CHARS]]))[0]
 
 
-class DeterministicMockEmbeddingProvider(EmbeddingProvider):
-    """
-    Deterministic mock embedding provider for tests and offline development.
-    Generates a unit-normalized vector of 1536 dimensions.
-    """
+class HashingEmbeddings:
+    """Deterministic bag-of-words feature hashing. Test/offline use only: lexical, not semantic."""
 
-    def __init__(self, dimension: int = 1536):
+    def __init__(self, dimension: int):
         self.dimension = dimension
+        self.model_id = f"mock:hashing:{dimension}"
 
-    def _generate_vector(self, text: str) -> List[float]:
-        # Hash text to generate a reproducible pseudo-random seed
-        seed_int = int(hashlib.md5(text.encode("utf-8")).hexdigest(), 16) % (2**32)
-        rng = np.random.default_rng(seed_int)
-        vec = rng.standard_normal(self.dimension)
-        # Normalize to unit length
-        norm = np.linalg.norm(vec)
-        if norm > 0:
-            vec = vec / norm
-        return vec.tolist()
+    def _vector(self, text: str) -> List[float]:
+        vec = [0.0] * self.dimension
+        for token in _TOKEN_RE.findall(text.lower()):
+            digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+            index = int.from_bytes(digest[:4], "little") % self.dimension
+            vec[index] += 1.0 if digest[4] & 1 else -1.0
+        norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+        return [v / norm for v in vec]
 
     async def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        return [self._generate_vector(t) for t in texts]
+        return [self._vector(t) for t in texts]
 
-    async def embed_query(self, query: str) -> List[float]:
-        return self._generate_vector(query)
+    async def embed_query(self, text: str) -> List[float]:
+        return self._vector(text)
 
 
+@lru_cache(maxsize=1)
 def get_embedding_provider() -> EmbeddingProvider:
-    """Returns OpenAI provider if API key configured, otherwise deterministic mock provider."""
-    if settings.OPENAI_API_KEY and not settings.OPENAI_API_KEY.startswith("your-"):
-        return OpenAIEmbeddingProvider(
-            api_key=settings.OPENAI_API_KEY,
-            model=settings.EMBEDDING_MODEL,
-        )
-    return DeterministicMockEmbeddingProvider(dimension=settings.EMBEDDING_DIMENSION)
+    provider = settings.EMBEDDING_PROVIDER
+    if provider == "mistral":
+        if not settings.MISTRAL_API_KEY:
+            raise EmbeddingError("EMBEDDING_PROVIDER=mistral requires MISTRAL_API_KEY")
+        return OpenAICompatibleEmbeddings(settings.MISTRAL_API_KEY, settings.EMBEDDING_MODEL, settings.MISTRAL_API_BASE, "mistral")
+    if provider == "openai":
+        if not settings.OPENAI_API_KEY:
+            raise EmbeddingError("EMBEDDING_PROVIDER=openai requires OPENAI_API_KEY")
+        return OpenAICompatibleEmbeddings(settings.OPENAI_API_KEY, settings.EMBEDDING_MODEL, settings.OPENAI_API_BASE, "openai")
+    return HashingEmbeddings(settings.EMBEDDING_DIMENSION)
+
+
+def index_version() -> str:
+    """Fingerprint of the indexing pipeline; documents indexed with another version get re-indexed."""
+    return f"{PIPELINE_VERSION}|{get_embedding_provider().model_id}"
