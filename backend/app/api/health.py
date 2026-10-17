@@ -1,36 +1,26 @@
 from fastapi import APIRouter
-from app.core.config import settings
-from app.core.telemetry.langfuse_client import get_langfuse
-from app.core.telemetry.otel_setup import get_tracer
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
-router = APIRouter(prefix="", tags=["Health & Observability"])
+from app.core.config import settings
+from app.db.database import engine
+
+router = APIRouter(tags=["Health"])
 
 
 @router.get("/health")
-async def health_check():
-    return {
-        "status": "healthy",
-        "project": settings.PROJECT_NAME,
-        "version": settings.VERSION,
-        "environment": settings.ENVIRONMENT,
-        "mock_onedrive_mode": settings.DEV_MOCK_ONEDRIVE,
-        "mock_gdrive_mode": settings.DEV_MOCK_GDRIVE,
-    }
+async def health():
+    """Liveness: the process is up."""
+    return {"status": "ok", "version": settings.VERSION, "sandbox_mode": settings.sandbox_mode}
 
 
-@router.get("/telemetry/status")
-async def telemetry_status():
-    tracer = get_tracer()
-    langfuse = get_langfuse()
-    return {
-        "opentelemetry": {
-            "service_name": settings.OTEL_SERVICE_NAME,
-            "tracer_active": tracer is not None,
-            "otlp_endpoint": settings.OTEL_EXPORTER_OTLP_ENDPOINT or "None (local console)",
-        },
-        "langfuse": {
-            "host": settings.LANGFUSE_HOST,
-            "client_active": langfuse is not None,
-            "configured": bool(settings.LANGFUSE_PUBLIC_KEY and settings.LANGFUSE_SECRET_KEY),
-        }
-    }
+@router.get("/health/ready")
+async def ready():
+    """Readiness: database reachable and migrated to the expected schema."""
+    try:
+        async with engine.connect() as conn:
+            revision = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
+            await conn.execute(text("SELECT 1 FROM document_chunks LIMIT 1"))
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable", "database": "unreachable or not migrated"})
+    return {"status": "ready", "database": "ok", "schema_revision": revision}

@@ -1,298 +1,186 @@
+import asyncio
 import json
+import logging
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from sqlalchemy import select
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import get_current_user
-from app.core.telemetry.langfuse_client import log_evaluation_score
-from app.db.database import AsyncSessionLocal, get_db
+from app.core.config import settings
+from app.core.telemetry.langfuse_client import log_score, rag_trace
+from app.db.database import AsyncSessionLocal, get_db, utcnow
 from app.models.chat import ChatMessage, ChatSession
-from app.models.document import Document
 from app.models.user import User
-from app.services.rag_service import rag_service
+from app.services import rag_service
 
-router = APIRouter(prefix="/chat", tags=["Grounded Conversational RAG & Memory"])
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/chat", tags=["Chat"])
 
 
 class ChatStreamRequest(BaseModel):
-    query: str
-    session_id: Optional[str] = None
+    query: str = Field(..., min_length=1, max_length=settings.MAX_QUERY_CHARS)
+    session_id: Optional[str] = Field(None, max_length=36)
+
+    @field_validator("query")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Query cannot be empty.")
+        return value.strip()
 
 
 class FeedbackRequest(BaseModel):
-    message_id: Optional[str] = None
-    trace_id: str
-    feedback: int  # 1 for thumbs-up, -1 for thumbs-down
-    comment: Optional[str] = None
+    message_id: str = Field(..., max_length=36)
+    feedback: int = Field(..., ge=-1, le=1)
+    comment: Optional[str] = Field(None, max_length=2000)
 
 
-class CompareRequest(BaseModel):
-    doc_a_id: str
-    doc_b_id: str
-    focus_topic: Optional[str] = None
+def _sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+async def _owned_session(db: AsyncSession, session_id: str, user: User) -> ChatSession:
+    session = await db.get(ChatSession, session_id)
+    if session is None or session.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return session
 
 
 @router.post("/stream")
-async def stream_chat(
-    req: ChatStreamRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Streaming Server-Sent Events (SSE) endpoint for grounded RAG conversations.
-    """
-    if not req.query.strip():
-        raise HTTPException(status_code=400, detail="Query cannot be empty.")
-
-    # 1. Fetch or create chat session
-    session_id = req.session_id
-    if session_id:
-        session = await db.get(ChatSession, session_id)
-        if not session or session.user_id != current_user.id:
-            session = None
-
-    if not session_id or not session:
-        session = ChatSession(
-            user_id=current_user.id,
-            title=req.query[:40] + ("..." if len(req.query) > 40 else ""),
-        )
+async def stream_chat(req: ChatStreamRequest, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    """Server-Sent Events: {"status"} -> {"token"}* -> {"done", citations, message_id} or {"error"}."""
+    session = await _owned_session(db, req.session_id, user) if req.session_id else None
+    history: List[dict] = []
+    if session is None:
+        title = req.query[:60] + ("..." if len(req.query) > 60 else "")
+        session = ChatSession(user_id=user.id, title=title)
         db.add(session)
-        await db.commit()
-        await db.refresh(session)
-        session_id = session.id
-
-    # 2. Record User Message
-    user_msg = ChatMessage(
-        session_id=session_id,
-        user_id=current_user.id,
-        role="user",
-        content=req.query,
-    )
-    db.add(user_msg)
+        await db.flush()
+    else:
+        rows = (await db.execute(
+            select(ChatMessage.role, ChatMessage.content)
+            .where(ChatMessage.session_id == session.id)
+            .order_by(ChatMessage.created_at.desc())
+            .limit(settings.CHAT_HISTORY_TURNS * 2)
+        )).all()
+        history = [{"role": r.role, "content": r.content} for r in reversed(rows)]
+        if history and history[0]["role"] == "assistant":
+            history = history[1:]  # start the window on a user turn
+    db.add(ChatMessage(session_id=session.id, user_id=user.id, role="user", content=req.query))
+    session.updated_at = utcnow()
     await db.commit()
 
-    # 3. Retrieve recent history for context
-    history_stmt = (
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .order_by(ChatMessage.created_at.desc())
-        .limit(6)
-    )
-    res = await db.execute(history_stmt)
-    recent_msgs = list(reversed(res.scalars().all()))
-    history_payload = [{"role": m.role, "content": m.content} for m in recent_msgs]
+    session_id, user_id, question = session.id, user.id, req.query
+    message_id = str(uuid.uuid4())
 
-    # 4. Stream RAG generator — wrap to persist assistant reply after stream
-    async def _stream_and_persist():
-        accumulated_text = ""
-        citations_payload = None
+    async def events():
+        answer: List[str] = []
+        citations: List[dict] = []
         trace_id = None
-
-        async for chunk in rag_service.stream_rag_response(
-            query=req.query,
-            user_id=current_user.id,
-            chat_history=history_payload,
-        ):
-            yield chunk
-
-            # Parse the SSE chunk to extract content
-            if chunk.startswith("data: "):
-                try:
-                    parsed = json.loads(chunk[6:].strip())
-                    if "token" in parsed:
-                        accumulated_text += parsed["token"]
-                    if parsed.get("done"):
-                        citations_payload = parsed.get("citations")
-                        trace_id = parsed.get("trace_id")
-                        parsed["session_id"] = session_id
-                        chunk = f"data: {json.dumps(parsed)}\n\n"
-                except Exception:
-                    pass
-
-        # After stream completes, persist the assistant message
-        if accumulated_text.strip():
-            async with AsyncSessionLocal() as persist_session:
-                assistant_msg = ChatMessage(
-                    session_id=session_id,
-                    user_id=current_user.id,
-                    role="assistant",
-                    content=accumulated_text.strip(),
-                    citations=citations_payload,
-                    langfuse_trace_id=trace_id,
-                )
-                persist_session.add(assistant_msg)
-
-                # Update session timestamp
-                chat_sess = await persist_session.get(ChatSession, session_id)
-                if chat_sess:
-                    chat_sess.updated_at = datetime.now(timezone.utc)
-
-                await persist_session.commit()
+        error: Optional[str] = None
+        try:
+            yield _sse({"status": "searching", "session_id": session_id})
+            with rag_trace("rag_chat", input={"question": question},
+                           metadata={**rag_service.PROMPT_METADATA, "session_id": session_id}) as trace:
+                trace_id = trace.trace_id
+                async with AsyncSessionLocal() as work_db:
+                    prepared = await rag_service.prepare(work_db, user_id, question, history)
+                citations = prepared.citations
+                yield _sse({"status": "generating", "intent": prepared.plan.intent, "sources": len(citations)})
+                async for token in rag_service.stream_answer(prepared):
+                    answer.append(token)
+                    yield _sse({"token": token})
+                trace.update(output="".join(answer), metadata={"intent": prepared.plan.intent,
+                                                               "search_query": prepared.plan.search_query,
+                                                               "sources": len(citations)})
+        except (asyncio.CancelledError, GeneratorExit):
+            error = "cancelled"  # client disconnected or pressed Stop
+            raise
+        except Exception:
+            logger.exception("Chat generation failed")
+            error = "The assistant could not answer right now. Please try again in a moment."
+            yield _sse({"error": error, "done": True, "session_id": session_id, "message_id": message_id})
+        finally:
+            text = "".join(answer).strip()
+            if error and text:
+                text += "\n\n_(Answer interrupted.)_" if error == "cancelled" else "\n\n_(Answer incomplete because of an error.)_"
+            if text:
+                used = rag_service.cited_sources(text, citations)
+                await asyncio.shield(_persist(session_id, user_id, message_id, text, used, trace_id))
+                if error is None:
+                    yield _sse({"done": True, "session_id": session_id, "message_id": message_id,
+                                "citations": used, "trace_id": trace_id})
 
     return StreamingResponse(
-        _stream_and_persist(),
+        events(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Chat-Session-Id": session_id,
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-Chat-Session-Id": session_id},
     )
+
+
+async def _persist(session_id: str, user_id: str, message_id: str, text: str, citations: List[dict], trace_id: Optional[str]) -> None:
+    try:
+        async with AsyncSessionLocal() as db:
+            db.add(ChatMessage(id=message_id, session_id=session_id, user_id=user_id, role="assistant",
+                               content=text, citations=citations, langfuse_trace_id=trace_id))
+            session = await db.get(ChatSession, session_id)
+            if session is not None:
+                session.updated_at = utcnow()
+            await db.commit()
+    except Exception:
+        logger.exception("Failed to persist assistant message")
 
 
 @router.get("/sessions")
-async def list_chat_sessions(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Lists all chat sessions for the current user."""
-    stmt = (
-        select(ChatSession)
-        .where(ChatSession.user_id == current_user.id)
-        .order_by(ChatSession.updated_at.desc())
-    )
-    res = await db.execute(stmt)
-    sessions = res.scalars().all()
-    return {
-        "sessions": [
-            {
-                "id": s.id,
-                "title": s.title,
-                "created_at": s.created_at.isoformat() if s.created_at else None,
-                "updated_at": s.updated_at.isoformat() if s.updated_at else None,
-            }
-            for s in sessions
-        ]
-    }
+async def list_sessions(limit: int = Query(100, ge=1, le=500), db: AsyncSession = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    rows = (await db.execute(
+        select(ChatSession).where(ChatSession.user_id == user.id).order_by(ChatSession.updated_at.desc()).limit(limit)
+    )).scalars().all()
+    return {"sessions": [
+        {"id": s.id, "title": s.title,
+         "created_at": s.created_at.isoformat() if s.created_at else None,
+         "updated_at": s.updated_at.isoformat() if s.updated_at else None}
+        for s in rows
+    ]}
 
 
 @router.get("/sessions/{session_id}/messages")
-async def get_session_messages(
-    session_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Retrieves message history for a specific session."""
-    session = await db.get(ChatSession, session_id)
-    if not session or session.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Session not found.")
-
-    stmt = (
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .order_by(ChatMessage.created_at.asc())
-    )
-    res = await db.execute(stmt)
-    messages = res.scalars().all()
-
+async def session_messages(session_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    session = await _owned_session(db, session_id, user)
+    rows = (await db.execute(
+        select(ChatMessage).where(ChatMessage.session_id == session.id).order_by(ChatMessage.created_at)
+    )).scalars().all()
     return {
         "session_id": session.id,
         "title": session.title,
         "messages": [
-            {
-                "id": m.id,
-                "role": m.role,
-                "content": m.content,
-                "citations": m.citations,
-                "langfuse_trace_id": m.langfuse_trace_id,
-                "feedback": m.feedback,
-                "created_at": m.created_at.isoformat() if m.created_at else None,
-            }
-            for m in messages
+            {"id": m.id, "role": m.role, "content": m.content, "citations": m.citations or [],
+             "feedback": m.feedback, "created_at": m.created_at.isoformat() if m.created_at else None}
+            for m in rows
         ],
     }
 
 
 @router.delete("/sessions/{session_id}")
-async def delete_chat_session(
-    session_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Deletes a chat session and all its messages for the current user."""
-    session = await db.get(ChatSession, session_id)
-    if not session or session.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Session not found.")
-
-    stmt = select(ChatMessage).where(ChatMessage.session_id == session_id)
-    res = await db.execute(stmt)
-    msgs = res.scalars().all()
-    for m in msgs:
-        await db.delete(m)
-
-    await db.delete(session)
+async def delete_session(session_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    session = await _owned_session(db, session_id, user)
+    await db.execute(delete(ChatSession).where(ChatSession.id == session.id))
     await db.commit()
-    return {"status": "success", "deleted_session_id": session_id}
+    return {"status": "deleted", "session_id": session_id}
 
 
 @router.post("/feedback")
-async def record_user_feedback(
-    req: FeedbackRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Records thumbs-up (+1) or thumbs-down (-1) user feedback to Langfuse.
-    """
-    val = 1.0 if req.feedback > 0 else 0.0
-    logged = log_evaluation_score(
-        trace_id=req.trace_id,
-        name="user_feedback",
-        value=val,
-        comment=req.comment or ("Positive" if val == 1.0 else "Negative"),
-    )
-
-    if req.message_id:
-        msg = await db.get(ChatMessage, req.message_id)
-        if msg and msg.user_id == current_user.id:
-            msg.feedback = req.feedback
-            await db.commit()
-
-    return {"status": "success", "logged_to_langfuse": logged}
-
-
-@router.post("/compare")
-async def compare_documents(
-    req: CompareRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Structured document comparison (Section 36):
-    Identifies Changed, New, Removed, and Unchanged aspects between two documents.
-    """
-    doc_a = await db.get(Document, req.doc_a_id)
-    doc_b = await db.get(Document, req.doc_b_id)
-
-    if not doc_a or not doc_b or doc_a.user_id != current_user.id or doc_b.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="One or both documents not found.")
-
-    return {
-        "document_a": {
-            "id": doc_a.id,
-            "filename": doc_a.filename,
-            "modified": doc_a.modified_date.isoformat() if doc_a.modified_date else None,
-        },
-        "document_b": {
-            "id": doc_b.id,
-            "filename": doc_b.filename,
-            "modified": doc_b.modified_date.isoformat() if doc_b.modified_date else None,
-        },
-        "comparison": {
-            "summary": f"Comparison between {doc_a.filename} and {doc_b.filename}",
-            "changes": [
-                {"category": "Changed", "details": "Updated policy requirements and scope definitions."},
-                {"category": "New", "details": "Added section on remote work and asynchronous approvals."},
-                {"category": "Unchanged", "details": "Standard eligibility criteria remains unchanged."},
-            ],
-            "citations": [
-                {"filename": doc_a.filename, "onedrive_url": doc_a.onedrive_url},
-                {"filename": doc_b.filename, "onedrive_url": doc_b.onedrive_url},
-            ],
-        },
-    }
+async def feedback(req: FeedbackRequest, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    message = await db.get(ChatMessage, req.message_id)
+    if message is None or message.user_id != user.id or message.role != "assistant":
+        raise HTTPException(status_code=404, detail="Message not found.")
+    message.feedback = req.feedback or None
+    await db.commit()
+    logged = log_score(message.langfuse_trace_id, "user_feedback", 1.0 if req.feedback > 0 else 0.0, req.comment)
+    return {"status": "recorded", "logged_to_langfuse": logged}

@@ -1,132 +1,184 @@
+"""Query understanding: follow-up rewriting, intent, and document-name targeting."""
 import json
 import logging
 import re
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+import unicodedata
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from typing import Dict, List, Optional
 
 from app.core.config import settings
-from app.core.telemetry.langfuse_client import get_prompt_template, observe_rag
+from app.prompts import REWRITE_SYSTEM_PROMPT
 from app.services.llm_service import get_llm_client
 
 logger = logging.getLogger(__name__)
 
+DOCUMENT_QUESTION = "document_question"
+SUMMARIZE = "summarize_document"
+LIST_DOCUMENTS = "list_documents"
+CONVERSATION = "conversation"
+INTENTS = {DOCUMENT_QUESTION, SUMMARIZE, LIST_DOCUMENTS, CONVERSATION}
+
+_CITATION_RE = re.compile(r"\[\d+\]")
+_GREETING_RE = re.compile(
+    r"^\s*(hi|hello|hey|hiya|good (morning|afternoon|evening)|thanks?( you)?|thank you|thx|ok(ay)?|cool|great|"
+    r"who are you|what can you do|what do you do|how can you help( me)?|help)\b[\s!.?]*$",
+    re.IGNORECASE,
+)
+_LIST_RE = re.compile(
+    r"\b(what|which|list|show|name)\b.{0,40}\b(documents?|files?|docs)\b.{0,40}\b(do i have|have i|are there|"
+    r"are (indexed|synced|available|connected|uploaded)|indexed|synced|available|in my (drive|knowledge base))\b"
+    r"|^\s*(list|show)( me)?( all| my)? (documents|files|docs)\b|\bhow many (documents|files)\b",
+    re.IGNORECASE,
+)
+_SUMMARY_RE = re.compile(r"\b(summari[sz]e|summary|overview|tl;?dr|key (points|takeaways)|main points|gist)\b", re.IGNORECASE)
+_FILE_TYPE_PATTERNS = [
+    ("pdf", re.compile(r"\bpdfs?\b", re.IGNORECASE)),
+    ("xlsx", re.compile(r"\b(spreadsheets?|excel|xlsx|sheets?)\b", re.IGNORECASE)),
+    ("pptx", re.compile(r"\b(presentations?|slides?|decks?|pptx|powerpoints?)\b", re.IGNORECASE)),
+    ("docx", re.compile(r"\b(word (documents?|files?)|docx)\b", re.IGNORECASE)),
+]
+_TIME_CUE_RE = re.compile(r"\b(modified|updated|changed|edited|added|created|new)\b", re.IGNORECASE)
+
 
 @dataclass
-class QueryIntent:
-    """Structured output from query understanding layer."""
-    original_query: str
-    semantic_query: str
-    question_type: str  # FACTUAL, DOCUMENT_SEARCH, SUMMARY, COMPARISON, METADATA_SEARCH, RECENT_CHANGES, UNKNOWN
-    folder_filter: Optional[str] = None
-    file_type_filter: Optional[str] = None
-    filename_filter: Optional[str] = None
+class CatalogEntry:
+    id: str
+    filename: str
+    file_type: str
+    folder_path: str
+    modified_date: Optional[datetime]
+    drive_type: str
+
+
+@dataclass
+class QueryPlan:
+    query: str
+    search_query: str
+    intent: str = DOCUMENT_QUESTION
+    target_document_ids: List[str] = field(default_factory=list)
+    file_types: List[str] = field(default_factory=list)
     modified_after: Optional[datetime] = None
-    modified_before: Optional[datetime] = None
-    target_documents: List[str] = None
+    rewritten: bool = False
 
 
-class QueryUnderstandingEngine:
-    """
-    Analyzes user queries to classify intent and extract metadata filters
-    (folder paths, date ranges, file types, document names) for hybrid retrieval.
-    """
+def strip_citations(text: str) -> str:
+    return _CITATION_RE.sub("", text)
 
-    def __init__(self):
-        self.known_folders = ["/HR", "/Finance", "/Engineering", "/Company"]
-        self.known_types = ["pdf", "docx", "xlsx", "pptx", "txt"]
 
-    @observe_rag(name="query_understanding", prompt_name="query_classifier", prompt_version="v1")
-    async def analyze_query(self, query: str) -> QueryIntent:
-        clean_q = query.strip()
-        lower_q = clean_q.lower()
+def _normalize(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii").lower()
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", text).split())
 
-        # 1. Rule-based Fast Metadata Detection (instant, zero cost, 100% reliable)
-        folder_filter = None
-        for f in self.known_folders:
-            folder_name = f.replace("/", "").lower()
-            if folder_name in lower_q:
-                folder_filter = f
-                break
 
-        file_type_filter = None
-        for t in self.known_types:
-            if f".{t}" in lower_q or f"{t} file" in lower_q or f"{t} document" in lower_q:
-                file_type_filter = t
-                break
+def _stem(filename: str) -> str:
+    base = filename.rsplit(".", 1)[0] if re.search(r"\.[A-Za-z0-9]{1,6}$", filename) else filename
+    return _normalize(base)
 
-        # Time-based filter detection
-        modified_after = None
-        now = datetime.now(timezone.utc)
-        if "this month" in lower_q:
-            modified_after = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-        elif "this year" in lower_q:
-            modified_after = datetime(now.year, 1, 1, tzinfo=timezone.utc)
-        elif "recently" in lower_q or "recent" in lower_q or "last 30 days" in lower_q:
-            modified_after = now - timedelta(days=30)
-        elif "last week" in lower_q:
-            modified_after = now - timedelta(days=7)
 
-        # Question Type Classification
-        if "compare" in lower_q or "difference between" in lower_q:
-            question_type = "COMPARISON"
-        elif "summarize" in lower_q or "summary of" in lower_q:
-            question_type = "SUMMARY"
-        elif "what changed" in lower_q or "recent changes" in lower_q or "modified" in lower_q:
-            question_type = "RECENT_CHANGES"
-        elif "what documents" in lower_q or "show documents" in lower_q or "list documents" in lower_q or "which documents" in lower_q:
-            question_type = "METADATA_SEARCH"
-        elif "where is" in lower_q or "find the document" in lower_q:
-            question_type = "DOCUMENT_SEARCH"
-        else:
-            question_type = "FACTUAL"
+def match_documents(query: str, catalog: List[CatalogEntry]) -> List[str]:
+    """Documents the query names explicitly (whole-word match of the file name without extension)."""
+    q = f" {_normalize(query)} "
+    hits = []
+    for entry in catalog:
+        stem = _stem(entry.filename)
+        if len(stem) >= 4 and f" {stem} " in q:
+            hits.append((len(stem), entry.id))
+    hits.sort(reverse=True)
+    return [doc_id for _, doc_id in hits[:3]]
 
-        # If LLM API is available and query is complex, we can use LLM structured output
-        llm = get_llm_client()
-        if llm:
-            try:
-                system_prompt = get_prompt_template("query_classifier", version="v1")
-                res = await llm.client.chat.completions.create(
-                    model=llm.model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Extract metadata and intent for query: '{clean_q}'"},
-                    ],
-                    response_format={"type": "json_object"},
-                    temperature=0.0,
-                )
-                raw_text = res.choices[0].message.content or "{}"
-                clean_json_str = raw_text.strip()
-                if clean_json_str.startswith("```"):
-                    clean_json_str = re.sub(r"^```(?:json)?\s*", "", clean_json_str)
-                    clean_json_str = re.sub(r"\s*```$", "", clean_json_str)
-                llm_parsed = json.loads(clean_json_str)
-                if llm_parsed.get("folder_path"):
-                    folder_filter = llm_parsed["folder_path"]
-                if llm_parsed.get("file_type"):
-                    file_type_filter = llm_parsed["file_type"]
-                if llm_parsed.get("question_type"):
-                    question_type = llm_parsed["question_type"]
-            except Exception as e:
-                logger.debug(f"{llm.provider} query understanding fallback to rule engine: {e}")
 
-        # Semantic query cleans out conversational filler
-        semantic_q = clean_q
-        for prefix in ["what is the ", "what are the ", "can you tell me ", "show me "]:
-            if semantic_q.lower().startswith(prefix):
-                semantic_q = semantic_q[len(prefix):]
-                break
+def _file_types(query: str) -> List[str]:
+    return [t for t, pattern in _FILE_TYPE_PATTERNS if pattern.search(query)]
 
-        return QueryIntent(
-            original_query=clean_q,
-            semantic_query=semantic_q,
-            question_type=question_type,
-            folder_filter=folder_filter,
-            file_type_filter=file_type_filter,
-            filename_filter=None,
-            modified_after=modified_after,
-            target_documents=[],
+
+def _modified_after(query: str) -> Optional[datetime]:
+    if not _TIME_CUE_RE.search(query):
+        return None
+    q = query.lower()
+    now = datetime.now(UTC)
+    if "today" in q:
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if "this week" in q or "last week" in q or "past week" in q:
+        return now - timedelta(days=7)
+    if "this month" in q:
+        return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if "last month" in q or "recent" in q or "lately" in q or "last 30 days" in q:
+        return now - timedelta(days=30)
+    if "this year" in q:
+        return now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    return None
+
+
+def _rule_intent(query: str, targets: List[str]) -> str:
+    if len(query) <= 80 and _GREETING_RE.match(query):
+        return CONVERSATION
+    if _LIST_RE.search(query):
+        return LIST_DOCUMENTS
+    if targets and _SUMMARY_RE.search(query):
+        return SUMMARIZE
+    return DOCUMENT_QUESTION
+
+
+def _history_text(history: List[Dict[str, str]]) -> str:
+    lines = []
+    for turn in history[-settings.CHAT_HISTORY_TURNS * 2:]:
+        content = " ".join(strip_citations(turn["content"]).split())[:600]
+        lines.append(f"{turn['role']}: {content}")
+    return "\n".join(lines)
+
+
+async def _llm_rewrite(query: str, history: List[Dict[str, str]], catalog: List[CatalogEntry]) -> Optional[dict]:
+    titles = "\n".join(f"- {e.filename}" for e in catalog[:200]) or "(none)"
+    user = (
+        f"Document list:\n{titles}\n\nConversation:\n{_history_text(history)}\n\n"
+        f"Latest message:\n{query}\n\nReturn the JSON object."
+    )
+    try:
+        raw = await get_llm_client().complete_json(
+            [{"role": "system", "content": REWRITE_SYSTEM_PROMPT}, {"role": "user", "content": user}],
+            request_timeout=settings.QUERY_REWRITE_TIMEOUT_SECONDS,
         )
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception as exc:
+        logger.warning("Query rewrite failed, using the original question: %s", type(exc).__name__)
+        return None
 
 
-query_engine = QueryUnderstandingEngine()
+async def plan_query(query: str, history: List[Dict[str, str]], catalog: List[CatalogEntry]) -> QueryPlan:
+    query = query.strip()
+    targets = match_documents(query, catalog)
+    plan = QueryPlan(
+        query=query,
+        search_query=query,
+        intent=_rule_intent(query, targets),
+        target_document_ids=targets,
+        file_types=_file_types(query),
+        modified_after=_modified_after(query),
+    )
+    # Self-contained first questions skip the extra LLM round trip.
+    if not history or plan.intent == CONVERSATION:
+        return plan
+
+    data = await _llm_rewrite(query, history, catalog)
+    if not data:
+        return plan
+    standalone = data.get("standalone_query")
+    if isinstance(standalone, str) and 0 < len(standalone.strip()) <= 1000:
+        plan.search_query = standalone.strip()
+        plan.rewritten = plan.search_query != query
+    intent = data.get("intent")
+    if intent in INTENTS:
+        plan.intent = intent
+    by_title = {e.filename.lower(): e.id for e in catalog}
+    named = [by_title[t.lower()] for t in data.get("target_documents") or [] if isinstance(t, str) and t.lower() in by_title]
+    if named:
+        plan.target_document_ids = list(dict.fromkeys(named + plan.target_document_ids))[:3]
+    else:
+        plan.target_document_ids = match_documents(plan.search_query, catalog) or plan.target_document_ids
+    if plan.intent == SUMMARIZE and not plan.target_document_ids:
+        plan.intent = DOCUMENT_QUESTION
+    plan.file_types = plan.file_types or _file_types(plan.search_query)
+    plan.modified_after = plan.modified_after or _modified_after(plan.search_query)
+    return plan

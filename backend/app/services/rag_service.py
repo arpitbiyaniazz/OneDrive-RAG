@@ -1,188 +1,143 @@
-import json
+"""Builds the grounded prompt and streams the answer."""
 import logging
-import time
-import uuid
-from typing import AsyncGenerator, Dict, List, Optional
+import re
+from dataclasses import dataclass, field
+from html import escape
+from typing import AsyncIterator, Dict, List, Optional
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.telemetry.langfuse_client import get_langfuse, get_prompt_template, observe_rag
-from app.core.telemetry.otel_setup import get_current_trace_id
+from app.prompts import ANSWER_PROMPT_VERSION, ANSWER_SYSTEM_PROMPT
 from app.services.llm_service import get_llm_client
-from app.services.query_engine import query_engine
-from app.services.reranking_service import reranking_service
-from app.services.retrieval_service import RetrievedChunk, retrieval_service
+from app.services.query_engine import (
+    CONVERSATION,
+    LIST_DOCUMENTS,
+    SUMMARIZE,
+    CatalogEntry,
+    QueryPlan,
+    plan_query,
+    strip_citations,
+)
+from app.services.retrieval_service import RetrievedChunk, document_chunks_in_order, hybrid_search, load_catalog
 
 logger = logging.getLogger(__name__)
 
-
-class GroundedRAGService:
-    """
-    Orchestrates Query Understanding, Metadata-Aware Retrieval, Reranking,
-    Prompt Injection Shielding, and Grounded Streaming LLM Generation.
-    """
-
-    def build_prompt_context(self, chunks: List[RetrievedChunk]) -> str:
-        """Formats retrieved chunks with strict prompt injection quarantine tags."""
-        context_parts = []
-        for idx, chunk in enumerate(chunks, 1):
-            page_info = f" page='{chunk.page_number}'" if chunk.page_number else ""
-            section_info = f" section='{chunk.section}'" if chunk.section else ""
-            context_parts.append(
-                f"<untrusted_reference_document index='{idx}' file='{chunk.filename}'{page_info}{section_info}>\n"
-                f"{chunk.content}\n"
-                f"</untrusted_reference_document>"
-            )
-        return "\n\n".join(context_parts)
-
-    def extract_citations(self, chunks: List[RetrievedChunk]) -> List[Dict]:
-        """Maps each unique retrieved document into an interactive source citation."""
-        citations = []
-        seen = set()
-        for idx, chunk in enumerate(chunks, 1):
-            key = (chunk.filename, chunk.page_number, chunk.section)
-            if key not in seen:
-                seen.add(key)
-                drive_type = getattr(chunk, "drive_type", "onedrive")
-                fallback_url = (
-                    f"https://drive.google.com/file/d/{chunk.filename}/view"
-                    if drive_type == "google_drive"
-                    else f"https://onedrive.live.com/view.aspx?file={chunk.filename}"
-                )
-                citations.append({
-                    "source_id": idx,
-                    "filename": chunk.filename,
-                    "page": chunk.page_number,
-                    "section": chunk.section,
-                    "folder_path": chunk.folder_path,
-                    "drive_type": drive_type,
-                    "onedrive_url": chunk.onedrive_url or fallback_url,
-                    "similarity_score": chunk.similarity_score,
-                })
-        return citations
-
-    @observe_rag(name="rag_chat_stream", prompt_name="rag_grounded_system", prompt_version="v2")
-    async def stream_rag_response(
-        self,
-        query: str,
-        user_id: str,
-        chat_history: Optional[List[Dict[str, str]]] = None,
-    ) -> AsyncGenerator[str, None]:
-        """
-        Server-Sent Events streaming generator yielding response tokens and final citations.
-        """
-        start_time = time.perf_counter()
-        langfuse_client = get_langfuse()
-        langfuse_trace_id = None
-        if langfuse_client:
-            if hasattr(langfuse_client, "get_current_trace_id"):
-                langfuse_trace_id = langfuse_client.get_current_trace_id()
-            if not langfuse_trace_id and hasattr(langfuse_client, "create_trace_id"):
-                langfuse_trace_id = langfuse_client.create_trace_id()
-        if not langfuse_trace_id:
-            langfuse_trace_id = str(uuid.uuid4())
-        otel_trace_id = get_current_trace_id()
-
-        # 1. Query Understanding
-        intent = await query_engine.analyze_query(query)
-
-        # 2. Metadata-Aware Retrieval
-        raw_candidates = await retrieval_service.retrieve(
-            user_id=user_id,
-            intent=intent,
-            top_k=10,
-        )
-
-        # 3. Reranking
-        top_chunks = reranking_service.rerank(
-            query=intent.semantic_query,
-            candidates=raw_candidates,
-            top_k=5,
-        )
-
-        citations = self.extract_citations(top_chunks)
-
-        # If no documents match
-        if not top_chunks:
-            no_info_msg = (
-                "I couldn't find enough information in your connected OneDrive documents "
-                "to answer this question reliably.\n\n"
-                "Try asking about a specific document (e.g. Leave Policy, Budget 2026, API Documentation) "
-                "or ensure your folder has been indexed."
-            )
-            for word in no_info_msg.split(" "):
-                yield f"data: {json.dumps({'token': word + ' '})}\n\n"
-            yield f"data: {json.dumps({'citations': [], 'trace_id': langfuse_trace_id, 'done': True})}\n\n"
-            return
-
-        # 4. Construct Prompt
-        system_instructions = get_prompt_template("rag_grounded_system", version="v2")
-        context_block = self.build_prompt_context(top_chunks)
-
-        user_content = (
-            f"Question: {query}\n\n"
-            f"Retrieved OneDrive Context:\n{context_block}\n\n"
-            f"Provide a clear, grounded answer with source citations [1], [2] where appropriate."
-        )
-
-        # 5. Check if real LLM API (Mistral or OpenAI) is available
-        llm = get_llm_client()
-        if llm:
-            try:
-                client = llm.client
-                messages = [{"role": "system", "content": system_instructions}]
-                if chat_history:
-                    for h in chat_history[-4:]:  # Include last 2 turns
-                        messages.append({"role": h["role"], "content": h["content"]})
-                messages.append({"role": "user", "content": user_content})
-
-                response_stream = await client.chat.completions.create(
-                    model=llm.model,
-                    messages=messages,
-                    stream=True,
-                    temperature=0.1,
-                )
-
-                async for chunk in response_stream:
-                    delta = chunk.choices[0].delta.content if chunk.choices else None
-                    if delta:
-                        yield f"data: {json.dumps({'token': delta})}\n\n"
-
-                yield f"data: {json.dumps({'citations': citations, 'trace_id': langfuse_trace_id, 'done': True})}\n\n"
-                if langfuse_client and hasattr(langfuse_client, "flush"):
-                    try:
-                        langfuse_client.flush()
-                    except Exception:
-                        pass
-                return
-            except Exception as e:
-                logger.error(f"{llm.provider} ({llm.model}) streaming error, falling back to local grounded generator: {e}")
-
-        # 6. High-Fidelity Local Grounded Generator (Offline / Sandbox Fallback)
-        # Synthesizes an authentic grounded response directly from the top chunks with citations
-        lines = []
-        for idx, chunk in enumerate(top_chunks[:3], 1):
-            clean_excerpt = chunk.content.strip()
-            # Pick the most relevant sentences
-            sentences = [s.strip() for s in clean_excerpt.split("\n") if len(s.strip()) > 15]
-            if sentences:
-                lines.append(f"{sentences[0]} [{idx}]")
-                if len(sentences) > 1:
-                    lines.append(f"{sentences[1]} [{idx}]")
-
-        answer_text = "\n\n".join(lines) if lines else top_chunks[0].content[:300] + " [1]"
-        prefix = f"Based on your connected OneDrive documents:\n\n"
-        full_response = prefix + answer_text
-
-        # Stream words smoothly
-        for word in full_response.split(" "):
-            yield f"data: {json.dumps({'token': word + ' '})}\n\n"
-
-        yield f"data: {json.dumps({'citations': citations, 'trace_id': langfuse_trace_id, 'done': True})}\n\n"
-        if langfuse_client and hasattr(langfuse_client, "flush"):
-            try:
-                langfuse_client.flush()
-            except Exception:
-                pass
+NO_SOURCES = "(no matching passages were found in the user's documents)"
+_BLOCK_TAG_RE = re.compile(r"<(/?)(sources?|catalog|question)\b", re.IGNORECASE)
+_CITED_RE = re.compile(r"\[(\d{1,3})\]")
 
 
-rag_service = GroundedRAGService()
+def _neutralize(text: str) -> str:
+    """Stops document text from closing or opening the prompt's structural tags."""
+    return _BLOCK_TAG_RE.sub(lambda m: "‹" + m.group(1) + m.group(2), text)
+
+
+def _attr(value: Optional[object]) -> str:
+    return escape(str(value), quote=True) if value is not None else ""
+
+
+def format_sources(chunks: List[RetrievedChunk]) -> str:
+    if not chunks:
+        return f"<sources>\n{NO_SOURCES}\n</sources>"
+    parts = ["<sources>"]
+    for index, chunk in enumerate(chunks, start=1):
+        attrs = f'id="{index}" title="{_attr(chunk.filename)}" kind="{_attr(chunk.file_type)}"'
+        if chunk.location:
+            attrs += f' location="{_attr(chunk.location)}"'
+        if chunk.modified_date:
+            attrs += f' modified="{chunk.modified_date.date().isoformat()}"'
+        parts.append(f"<source {attrs}>\n{_neutralize(chunk.content.strip())}\n</source>")
+    parts.append("</sources>")
+    return "\n".join(parts)
+
+
+def format_catalog(catalog: List[CatalogEntry], limit: int = 200) -> str:
+    lines = [f'<catalog count="{len(catalog)}">']
+    for entry in catalog[:limit]:
+        modified = f", modified {entry.modified_date.date().isoformat()}" if entry.modified_date else ""
+        lines.append(f"- {_neutralize(entry.filename)} ({entry.file_type}{modified}, folder {_neutralize(entry.folder_path)})")
+    if len(catalog) > limit:
+        lines.append(f"- ... and {len(catalog) - limit} more")
+    lines.append("</catalog>")
+    return "\n".join(lines)
+
+
+def build_messages(question: str, history: List[Dict[str, str]], chunks: List[RetrievedChunk],
+                   catalog: Optional[List[CatalogEntry]] = None) -> List[Dict[str, str]]:
+    messages = [{"role": "system", "content": ANSWER_SYSTEM_PROMPT}]
+    for turn in history[-settings.CHAT_HISTORY_TURNS * 2:]:
+        content = strip_citations(turn["content"]).strip()[:2000]
+        if content:
+            messages.append({"role": turn["role"], "content": content})
+    blocks = [format_sources(chunks)]
+    if catalog is not None:
+        blocks.append(format_catalog(catalog))
+    blocks.append(f"<question>\n{_neutralize(question)}\n</question>")
+    messages.append({"role": "user", "content": "\n\n".join(blocks)})
+    return messages
+
+
+def citation_payload(chunks: List[RetrievedChunk]) -> List[dict]:
+    return [
+        {
+            "source_id": index,
+            "document_id": c.document_id,
+            "filename": c.filename,
+            "file_type": c.file_type,
+            "drive_type": c.drive_type,
+            "folder_path": c.folder_path,
+            "location": c.location,
+            "page": c.page_start,
+            "section": c.section,
+            "url": c.url or None,  # never fabricated: absent when the provider gave no link
+        }
+        for index, c in enumerate(chunks, start=1)
+    ]
+
+
+def cited_sources(answer: str, citations: List[dict]) -> List[dict]:
+    used = {int(n) for n in _CITED_RE.findall(answer)}
+    return [c for c in citations if c["source_id"] in used]
+
+
+def _fit_budget(chunks: List[RetrievedChunk], max_chars: int) -> List[RetrievedChunk]:
+    out, total = [], 0
+    for chunk in chunks:
+        if out and total + len(chunk.content) > max_chars:
+            break
+        out.append(chunk)
+        total += len(chunk.content)
+    return out
+
+
+@dataclass
+class PreparedAnswer:
+    plan: QueryPlan
+    chunks: List[RetrievedChunk]
+    messages: List[Dict[str, str]]
+    citations: List[dict] = field(default_factory=list)
+
+
+async def prepare(db: AsyncSession, user_id: str, question: str, history: List[Dict[str, str]]) -> PreparedAnswer:
+    catalog = await load_catalog(db, user_id)
+    plan = await plan_query(question, history, catalog)
+    chunks: List[RetrievedChunk] = []
+    include_catalog = None
+    if plan.intent == LIST_DOCUMENTS:
+        include_catalog = catalog
+    elif plan.intent == SUMMARIZE and plan.target_document_ids:
+        chunks = await document_chunks_in_order(db, user_id, plan.target_document_ids[0], settings.CONTEXT_MAX_CHARS)
+    elif plan.intent != CONVERSATION and catalog:
+        chunks = await hybrid_search(db, user_id, plan)
+    chunks = _fit_budget(chunks, settings.CONTEXT_MAX_CHARS)
+    messages = build_messages(question, history, chunks, include_catalog)
+    return PreparedAnswer(plan=plan, chunks=chunks, messages=messages, citations=citation_payload(chunks))
+
+
+async def stream_answer(prepared: PreparedAnswer) -> AsyncIterator[str]:
+    async for token in get_llm_client().stream(prepared.messages):
+        yield token
+
+
+PROMPT_METADATA = {"prompt_version": ANSWER_PROMPT_VERSION}
