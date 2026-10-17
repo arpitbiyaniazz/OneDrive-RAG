@@ -1,186 +1,155 @@
-import { HealthStatus, TelemetryStatus, UserProfile, OneDriveItem } from '../types';
+import { DocumentRecord, DriveType, HealthStatus, IngestionJob, OneDriveItem, UserProfile } from '../types';
 
-const API_BASE = '/api';
+const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) || '/api';
+const TOKEN_KEY = 'onedrive_rag_token';
+const OAUTH_STATE_KEY = 'onedrive_rag_oauth_state';
 
-export async function fetchHealth(): Promise<HealthStatus> {
-  const res = await fetch(`${API_BASE}/health`);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch health: ${res.statusText}`);
+export type OAuthProvider = 'microsoft' | 'google';
+
+/** Fired when the server rejects the session so the app can return to the login page. */
+export const AUTH_EXPIRED_EVENT = 'auth-expired';
+
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
   }
+}
+
+function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+function getAuthHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const token = getToken();
+  return token ? { ...extra, Authorization: `Bearer ${token}` } : { ...extra };
+}
+
+async function errorFrom(res: Response): Promise<ApiError> {
+  const body = await res.json().catch(() => ({}));
+  const detail = body?.detail;
+  if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+    return new ApiError(detail.message || 'Request failed', res.status, detail.code);
+  }
+  if (Array.isArray(detail)) {
+    return new ApiError(detail.map((d: { msg?: string }) => d.msg).join('; ') || 'Invalid request', res.status);
+  }
+  return new ApiError(typeof detail === 'string' ? detail : `Request failed (${res.status})`, res.status);
+}
+
+/** fetch() against the API with the session token; a 401 signs the user out. */
+export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: getAuthHeaders((init.headers as Record<string, string>) || {}),
+  });
+  if (res.status === 401 && getToken() && !path.startsWith('/auth/')) {
+    localStorage.removeItem(TOKEN_KEY);
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+  }
+  return res;
+}
+
+async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const res = await apiFetch(path, init);
+  if (!res.ok) throw await errorFrom(res);
   return res.json();
 }
 
-export async function fetchTelemetryStatus(): Promise<TelemetryStatus> {
-  const res = await fetch(`${API_BASE}/telemetry/status`);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch telemetry status: ${res.statusText}`);
-  }
-  return res.json();
-}
+const jsonBody = (body: unknown): RequestInit => ({
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+});
+
+export const fetchHealth = () => apiJson<HealthStatus>('/health');
 
 export async function fetchCurrentUser(): Promise<UserProfile | null> {
-  const token = localStorage.getItem('onedrive_rag_token');
-  const headers: Record<string, string> = {};
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-  const res = await fetch(`${API_BASE}/auth/me`, { headers });
+  if (!getToken()) return null;
+  const res = await apiFetch('/auth/me');
   if (!res.ok) {
+    if (res.status === 401) localStorage.removeItem(TOKEN_KEY);
     return null;
   }
   return res.json();
 }
 
-export async function fetchLoginUrl(): Promise<string> {
-  const res = await fetch(`${API_BASE}/auth/login`);
-  if (!res.ok) {
-    throw new Error('Failed to retrieve login URL');
-  }
-  const data = await res.json();
-  return data.auth_url;
+/**
+ * Starts an OAuth redirect. The server-issued state is remembered for this tab so the callback
+ * can reject responses to sign-ins this browser never started (login CSRF).
+ * When already signed in, the provider account is linked to the current user.
+ */
+export async function startOAuth(provider: OAuthProvider): Promise<void> {
+  const path = provider === 'google' ? '/auth/google/login' : '/auth/login';
+  const data = await apiJson<{ auth_url: string; state: string }>(path);
+  sessionStorage.setItem(OAUTH_STATE_KEY, JSON.stringify({ provider, state: data.state }));
+  window.location.href = data.auth_url;
 }
 
-export async function exchangeAuthCode(code: string, state?: string): Promise<{ token: string; user: UserProfile }> {
-  const params = new URLSearchParams({ code });
-  if (state) params.set('state', state);
-  const res = await fetch(`${API_BASE}/auth/callback?${params.toString()}`);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Failed to exchange authorization code' }));
-    throw new Error(err.detail || 'OAuth exchange failed');
+export async function completeOAuth(provider: OAuthProvider, code: string, state: string | null): Promise<UserProfile> {
+  const saved = JSON.parse(sessionStorage.getItem(OAUTH_STATE_KEY) || 'null');
+  sessionStorage.removeItem(OAUTH_STATE_KEY);
+  if (!saved || saved.provider !== provider || !state || saved.state !== state) {
+    throw new ApiError('This sign-in link was not started from this browser. Please sign in again.', 400);
   }
-  const data = await res.json();
-  if (data.token) {
-    localStorage.setItem('onedrive_rag_token', data.token);
-  }
-  return data;
+  const path = provider === 'google' ? '/auth/google/callback' : '/auth/callback';
+  const params = new URLSearchParams({ code, state });
+  const data = await apiJson<{ token: string; user: UserProfile }>(`${path}?${params.toString()}`);
+  localStorage.setItem(TOKEN_KEY, data.token);
+  return data.user;
 }
 
-export async function loginSandboxDemo(): Promise<{ token: string; user: UserProfile }> {
-  return exchangeAuthCode('mock_dev_code_123');
-}
-
-export async function fetchGoogleLoginUrl(): Promise<string> {
-  const res = await fetch(`${API_BASE}/auth/google/login`);
-  if (!res.ok) {
-    throw new Error('Failed to retrieve Google login URL');
-  }
-  const data = await res.json();
-  return data.auth_url;
-}
-
-export async function exchangeGoogleAuthCode(code: string, state?: string): Promise<{ token: string; user: UserProfile }> {
-  const params = new URLSearchParams({ code });
-  if (state) params.set('state', state);
-  const res = await fetch(`${API_BASE}/auth/google/callback?${params.toString()}`);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Failed to exchange Google authorization code' }));
-    throw new Error(err.detail || 'Google OAuth exchange failed');
-  }
-  const data = await res.json();
-  if (data.token) {
-    localStorage.setItem('onedrive_rag_token', data.token);
-  }
-  return data;
-}
-
-export function getAuthHeaders(customHeaders: Record<string, string> = {}): Record<string, string> {
-  const token = localStorage.getItem('onedrive_rag_token');
-  const headers: Record<string, string> = { ...customHeaders };
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-  return headers;
-}
-
-export async function fetchOneDriveTree(): Promise<{ items: OneDriveItem[] }> {
-  const res = await fetch(`${API_BASE}/onedrive/tree`, { headers: getAuthHeaders() });
-  if (!res.ok) {
-    throw new Error('Failed to load OneDrive hierarchy');
-  }
-  return res.json();
-}
-
-export async function fetchGoogleDriveTree(): Promise<{ items: OneDriveItem[] }> {
-  const res = await fetch(`${API_BASE}/gdrive/tree`, { headers: getAuthHeaders() });
-  if (!res.ok) {
-    throw new Error('Failed to load Google Drive hierarchy');
-  }
-  return res.json();
-}
-
-export async function fetchGoogleDriveFolderItems(folderId: string): Promise<{ items: OneDriveItem[] }> {
-  const res = await fetch(`${API_BASE}/gdrive/folders/${folderId}/items`, { headers: getAuthHeaders() });
-  if (!res.ok) {
-    throw new Error('Failed to load Google Drive folder items');
-  }
-  return res.json();
-}
-
-export async function fetchOneDriveFolderItems(folderId: string): Promise<{ items: OneDriveItem[] }> {
-  const res = await fetch(`${API_BASE}/onedrive/folders/${folderId}/items`, { headers: getAuthHeaders() });
-  if (!res.ok) {
-    throw new Error('Failed to load OneDrive folder items');
-  }
-  return res.json();
-}
-
-export async function startIngestion(
-  itemIds: string[],
-  items?: OneDriveItem[],
-  folderPath: string = '/Company'
-): Promise<{ job_id: string; total_files: number; message: string }> {
-  const payload = {
-    item_ids: itemIds,
-    items: items?.map((it) => ({
-      id: it.id,
-      name: it.name,
-      drive_type: it.drive_type || 'onedrive',
-      mime_type: it.mime_type,
-    })),
-    folder_path: folderPath,
-  };
-  const res = await fetch(`${API_BASE}/ingestion/start`, {
-    method: 'POST',
-    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Failed to start ingestion' }));
-    throw new Error(err.detail || 'Ingestion failed');
-  }
-  return res.json();
-}
-
-export async function fetchDocuments(filters?: {
-  folder_path?: string;
-  file_type?: string;
-  drive_type?: string;
-}) {
-  const params = new URLSearchParams();
-  if (filters?.folder_path) params.set('folder_path', filters.folder_path);
-  if (filters?.file_type && filters.file_type !== 'all') params.set('file_type', filters.file_type);
-  if (filters?.drive_type && filters.drive_type !== 'all') params.set('drive_type', filters.drive_type);
-
-  const query = params.toString() ? `?${params.toString()}` : '';
-  const res = await fetch(`${API_BASE}/documents${query}`, { headers: getAuthHeaders() });
-  if (!res.ok) {
-    throw new Error('Failed to fetch documents');
-  }
-  return res.json();
-}
-
-export async function fetchKnowledgeBaseStats() {
-  const res = await fetch(`${API_BASE}/documents/stats`, { headers: getAuthHeaders() });
-  if (!res.ok) {
-    throw new Error('Failed to fetch stats');
-  }
-  return res.json();
+export async function loginSandbox(): Promise<UserProfile> {
+  const data = await apiJson<{ token: string; user: UserProfile }>('/auth/sandbox', { method: 'POST' });
+  localStorage.setItem(TOKEN_KEY, data.token);
+  return data.user;
 }
 
 export async function logoutUser(): Promise<void> {
-  localStorage.removeItem('onedrive_rag_token');
-  localStorage.removeItem('onedrive_rag_demo_session');
-  await fetch(`${API_BASE}/auth/logout`, { method: 'POST', headers: getAuthHeaders() }).catch(() => {});
+  await apiFetch('/auth/logout', { method: 'POST' }).catch(() => undefined);
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+const driveAlias = (drive: DriveType) => (drive === 'google_drive' ? 'gdrive' : 'onedrive');
+
+export const fetchDriveRoot = (drive: DriveType) =>
+  apiJson<{ items: OneDriveItem[]; root_id: string; source: string }>(`/${driveAlias(drive)}/tree`);
+
+export const fetchFolderItems = (drive: DriveType, folderId: string) =>
+  apiJson<{ items: OneDriveItem[] }>(`/${driveAlias(drive)}/folders/${encodeURIComponent(folderId)}/items`);
+
+export interface IngestSelection {
+  id: string;
+  drive_type: DriveType;
+  is_folder: boolean;
+  name?: string;
+}
+
+export const startIngestion = (items: IngestSelection[]) => apiJson<IngestionJob>('/ingestion/start', jsonBody({ items }));
+
+export const fetchJob = (jobId: string) => apiJson<IngestionJob>(`/ingestion/${encodeURIComponent(jobId)}`);
+
+export const startSync = () => apiJson<IngestionJob>('/sync/start', { method: 'POST' });
+
+export async function fetchDocuments(filters: { file_type?: string; drive_type?: string } = {}) {
+  const params = new URLSearchParams();
+  if (filters.file_type && filters.file_type !== 'all') params.set('file_type', filters.file_type);
+  if (filters.drive_type && filters.drive_type !== 'all') params.set('drive_type', filters.drive_type);
+  const query = params.toString() ? `?${params.toString()}` : '';
+  return apiJson<{ total: number; documents: DocumentRecord[] }>(`/documents${query}`);
+}
+
+export const fetchKnowledgeBaseStats = () =>
+  apiJson<{ total_documents: number; total_chunks: number; last_sync: string | null; by_status: Record<string, number> }>(
+    '/documents/stats'
+  );
+
+export async function deleteDocument(documentId: string): Promise<void> {
+  const res = await apiFetch(`/documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' });
+  if (!res.ok) throw await errorFrom(res);
 }
 
 export interface ChatSessionResponseItem {
@@ -191,25 +160,20 @@ export interface ChatSessionResponseItem {
 }
 
 export async function fetchChatSessions(): Promise<ChatSessionResponseItem[]> {
-  const res = await fetch(`${API_BASE}/chat/sessions`, {
-    headers: getAuthHeaders(),
-  });
-  if (!res.ok) {
-    throw new Error('Failed to fetch chat sessions');
-  }
-  const data = await res.json();
-  return data.sessions || [];
+  return (await apiJson<{ sessions: ChatSessionResponseItem[] }>('/chat/sessions')).sessions;
 }
 
 export async function deleteChatSession(sessionId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/chat/sessions/${sessionId}`, {
-    method: 'DELETE',
-    headers: getAuthHeaders(),
-  });
-  if (!res.ok) {
-    throw new Error('Failed to delete chat session');
-  }
+  const res = await apiFetch(`/chat/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+  if (!res.ok) throw await errorFrom(res);
 }
 
+export const fetchSessionMessages = (sessionId: string) =>
+  apiJson<{ messages: Array<{ id: string; role: 'user' | 'assistant'; content: string; citations: []; feedback: number | null; created_at: string }> }>(
+    `/chat/sessions/${encodeURIComponent(sessionId)}/messages`
+  );
 
+export const sendFeedback = (messageId: string, feedback: 1 | -1) =>
+  apiJson<{ status: string }>('/chat/feedback', jsonBody({ message_id: messageId, feedback }));
 
+export { errorFrom };

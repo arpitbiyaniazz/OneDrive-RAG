@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import {
   FolderSync,
-  Sparkles,
   ShieldCheck,
   Layers,
   ArrowRight,
@@ -14,13 +13,13 @@ import {
   Sun,
   Moon,
 } from 'lucide-react';
-import { HealthStatus, TelemetryStatus, UserProfile } from '../../types';
-import { fetchLoginUrl, fetchGoogleLoginUrl, loginSandboxDemo } from '../../services/api';
+import { HealthStatus, UserProfile } from '../../types';
+import { loginSandbox, startOAuth } from '../../services/api';
 
 interface LoginPageProps {
   onLoginSuccess: (user: UserProfile) => void;
   health: HealthStatus | null;
-  telemetry: TelemetryStatus | null;
+  initialError?: string | null;
   theme?: 'dark' | 'light';
   onToggleTheme?: () => void;
 }
@@ -28,45 +27,34 @@ interface LoginPageProps {
 export function LoginPage({
   onLoginSuccess,
   health,
-  telemetry,
+  initialError = null,
   theme = 'dark',
   onToggleTheme,
 }: LoginPageProps) {
   const [loading, setLoading] = useState<'microsoft' | 'google' | 'sandbox' | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(initialError);
 
-  async function handleMicrosoftLogin() {
+  async function handleOAuth(provider: 'microsoft' | 'google') {
     try {
-      setLoading('microsoft');
+      setLoading(provider);
       setErrorMessage(null);
-      const url = await fetchLoginUrl();
-      window.location.href = url;
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Failed to initiate Microsoft OAuth login');
+      await startOAuth(provider);
+    } catch (err) {
+      setErrorMessage((err as Error).message || 'Sign-in could not be started');
       setLoading(null);
     }
   }
 
-  async function handleGoogleLogin() {
-    try {
-      setLoading('google');
-      setErrorMessage(null);
-      const url = await fetchGoogleLoginUrl();
-      window.location.href = url;
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Failed to initiate Google OAuth login');
-      setLoading(null);
-    }
-  }
+  const handleMicrosoftLogin = () => handleOAuth('microsoft');
+  const handleGoogleLogin = () => handleOAuth('google');
 
   async function handleSandboxLogin() {
     try {
       setLoading('sandbox');
       setErrorMessage(null);
-      const res = await loginSandboxDemo();
-      onLoginSuccess(res.user);
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Failed to launch sandbox demo session');
+      onLoginSuccess(await loginSandbox());
+    } catch (err) {
+      setErrorMessage((err as Error).message || 'Failed to open the sandbox');
       setLoading(null);
     }
   }
@@ -434,6 +422,8 @@ export function LoginPage({
           </button>
 
           {/* Divider */}
+          {health?.sandbox_mode && (
+            <>
           <div
             style={{
               display: 'flex',
@@ -482,47 +472,31 @@ export function LoginPage({
               lineHeight: 1.4,
             }}
           >
-            Pre-loaded with financial tables, engineering blueprints, company HR policies, and marketing decks.
+            Sandbox drives with sample PDFs, Word documents, spreadsheets and slides (development only).
           </p>
 
-          {/* Live System Diagnostics */}
+            </>
+          )}
+
+          {/* Service status */}
           <div
             style={{
               marginTop: '2rem',
               paddingTop: '1.25rem',
               borderTop: '1px solid var(--border-color)',
               display: 'flex',
-              flexDirection: 'column',
-              gap: '0.5rem',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              fontSize: '0.75rem',
             }}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem' }}>
-              <span style={{ color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                <Cpu size={13} /> Backend Service:
-              </span>
-              <span style={{ color: health ? '#34d399' : '#f87171', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                {health ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
-                {health ? `Online (v${health.version})` : 'Offline'}
-              </span>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem' }}>
-              <span style={{ color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                <Layers size={13} /> OpenTelemetry:
-              </span>
-              <span style={{ color: telemetry?.opentelemetry.tracer_active ? '#a78bfa' : '#94a3b8', fontWeight: 600 }}>
-                {telemetry?.opentelemetry.tracer_active ? 'Active (localhost:4317)' : 'Ready'}
-              </span>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem' }}>
-              <span style={{ color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                <Sparkles size={13} /> Langfuse Evals:
-              </span>
-              <span style={{ color: telemetry?.langfuse.client_active ? '#22d3ee' : '#94a3b8', fontWeight: 600 }}>
-                {telemetry?.langfuse.client_active ? 'Instrumented' : 'Configured'}
-              </span>
-            </div>
+            <span style={{ color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <Cpu size={13} /> Service status:
+            </span>
+            <span style={{ color: health ? '#34d399' : '#f87171', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+              {health ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
+              {health ? 'Online' : 'Unavailable'}
+            </span>
           </div>
         </div>
       </div>
@@ -537,7 +511,7 @@ export function LoginPage({
           zIndex: 1,
         }}
       >
-        Enterprise Microsoft Graph RAG Architecture &bull; PostgreSQL pgvector &bull; OpenTelemetry &bull; Langfuse Observability
+        Answers are generated only from documents you choose to index.
       </footer>
     </div>
   );

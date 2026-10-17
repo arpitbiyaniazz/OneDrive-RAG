@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Folder,
   FolderOpen,
@@ -14,95 +14,89 @@ import {
   Database,
   RefreshCw,
   Sparkles,
+  Link2,
 } from 'lucide-react';
 import { OneDriveItem, DriveType } from '../../types';
-import { getAuthHeaders } from '../../services/api';
+import { ApiError, IngestSelection, fetchDriveRoot, fetchFolderItems, startOAuth } from '../../services/api';
 
 interface FolderTreeProps {
-  onIndexSelection: (selectedIds: string[], selectedItems: OneDriveItem[]) => void;
+  onIndexSelection: (items: IngestSelection[]) => Promise<void>;
   isIndexing?: boolean;
 }
 
 export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeProps) {
   const [driveType, setDriveType] = useState<DriveType>('onedrive');
   const [items, setItems] = useState<OneDriveItem[]>([]);
+  const [children, setChildren] = useState<Record<string, OneDriveItem[]>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [loadingFolder, setLoadingFolder] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
-    folder_hr: true,
-    folder_finance: true,
-    folder_engineering: true,
-    gdrive_folder_corporate: true,
-    gdrive_folder_tech: true,
-  });
-  const [selectedIds, setSelectedIds] = useState<Record<string, boolean>>({});
+  const [error, setError] = useState<ApiError | null>(null);
+  const [selected, setSelected] = useState<Record<string, OneDriveItem>>({});
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchTree(driveType);
   }, [driveType]);
 
-  async function fetchTree(targetDrive: DriveType = driveType) {
+  async function fetchTree(target: DriveType = driveType) {
     setLoading(true);
+    setError(null);
+    setChildren({});
+    setExpanded({});
+    setSelected({});
     try {
-      const endpoint = targetDrive === 'google_drive' ? '/api/gdrive/tree' : '/api/onedrive/tree';
-      const res = await fetch(endpoint, { headers: getAuthHeaders() });
-      if (res.ok) {
-        const data = await res.json();
-        setItems(data.items || []);
-        // Auto-select files by default for convenience
-        const initialSelected: Record<string, boolean> = {};
-        for (const item of data.items) {
-          if (!item.is_folder) initialSelected[item.id] = true;
-          if (item.children) {
-            for (const child of item.children) {
-              if (!child.is_folder) initialSelected[child.id] = true;
-            }
-          }
-        }
-        setSelectedIds(initialSelected);
-      }
+      setItems((await fetchDriveRoot(target)).items);
     } catch (e) {
-      console.error(`Failed to fetch ${targetDrive} tree`, e);
+      setItems([]);
+      setError(e instanceof ApiError ? e : new ApiError((e as Error).message, 0));
     } finally {
       setLoading(false);
     }
   }
 
-  function toggleFolder(folderId: string) {
-    setExpandedFolders((prev) => ({ ...prev, [folderId]: !prev[folderId] }));
+  async function toggleFolder(folder: OneDriveItem) {
+    const open = !expanded[folder.id];
+    setExpanded((prev) => ({ ...prev, [folder.id]: open }));
+    if (open && !children[folder.id]) {
+      setLoadingFolder(folder.id);
+      try {
+        const data = await fetchFolderItems(driveType, folder.id);
+        setChildren((prev) => ({ ...prev, [folder.id]: data.items }));
+      } catch (e) {
+        setError(e instanceof ApiError ? e : new ApiError((e as Error).message, 0));
+      } finally {
+        setLoadingFolder(null);
+      }
+    }
   }
 
   function toggleItemSelection(item: OneDriveItem) {
-    if (item.is_folder) {
-      // Toggle folder and all its direct children
-      const willSelect = !selectedIds[item.id];
-      const updated = { ...selectedIds, [item.id]: willSelect };
-      if (item.children) {
-        for (const child of item.children) {
-          updated[child.id] = willSelect;
-        }
-      }
-      setSelectedIds(updated);
-    } else {
-      setSelectedIds((prev) => ({ ...prev, [item.id]: !prev[item.id] }));
-    }
+    if (item.supported === false) return;
+    setSelected((prev) => {
+      const next = { ...prev };
+      if (next[item.id]) delete next[item.id];
+      else next[item.id] = item;
+      return next;
+    });
   }
 
-  function getAllSelectedItems(): OneDriveItem[] {
-    const selected: OneDriveItem[] = [];
-    function collect(list: OneDriveItem[]) {
-      for (const item of list) {
-        if (!item.is_folder && selectedIds[item.id]) {
-          selected.push(item);
-        }
-        if (item.children) collect(item.children);
-      }
-    }
-    collect(items);
-    return selected;
-  }
+  const selectedItems = Object.values(selected);
+  const selectedFiles = selectedItems.filter((i) => !i.is_folder).length;
+  const selectedFolders = selectedItems.length - selectedFiles;
 
-  const selectedItems = getAllSelectedItems();
+  async function submitSelection() {
+    setSubmitError(null);
+    try {
+      await onIndexSelection(
+        selectedItems.map((i) => ({ id: i.id, drive_type: driveType, is_folder: i.is_folder, name: i.name }))
+      );
+      setSelected({});
+    } catch (e) {
+      setSubmitError((e as Error).message);
+    }
+  }
 
   function formatBytes(bytes?: number) {
     if (!bytes) return '0 B';
@@ -134,18 +128,12 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
     }
   }
 
-  function renderItem(item: OneDriveItem, level: number = 0) {
-    const isExpanded = expandedFolders[item.id];
-    const isSelected = selectedIds[item.id];
-    const matchesSearch =
-      !searchQuery ||
-      item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (item.children &&
-        item.children.some((c) =>
-          c.name.toLowerCase().includes(searchQuery.toLowerCase())
-        ));
-
-    if (!matchesSearch) return null;
+  function renderItem(item: OneDriveItem, level: number = 0): JSX.Element | null {
+    const isExpanded = expanded[item.id];
+    const isSelected = Boolean(selected[item.id]);
+    const unsupported = item.supported === false;
+    const kids = children[item.id];
+    if (searchQuery && !item.is_folder && !item.name.toLowerCase().includes(searchQuery.toLowerCase())) return null;
 
     return (
       <div key={item.id} style={{ marginLeft: `${level * 1.5}rem` }}>
@@ -159,17 +147,19 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
             background: isSelected ? 'rgba(0, 120, 212, 0.08)' : 'transparent',
             border: isSelected ? '1px solid rgba(0, 120, 212, 0.2)' : '1px solid transparent',
             marginBottom: '0.25rem',
-            transition: 'all 0.15s ease',
+            opacity: unsupported ? 0.5 : 1,
           }}
+          title={unsupported ? 'This file type cannot be indexed' : undefined}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
-            {/* Checkbox */}
             <button
               onClick={() => toggleItemSelection(item)}
+              disabled={unsupported}
+              aria-label={`${isSelected ? 'Deselect' : 'Select'} ${item.name}`}
               style={{
                 background: 'transparent',
                 border: 'none',
-                cursor: 'pointer',
+                cursor: unsupported ? 'not-allowed' : 'pointer',
                 display: 'flex',
                 alignItems: 'center',
                 color: isSelected ? '#38bdf8' : 'var(--text-muted)',
@@ -178,35 +168,26 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
               {isSelected ? <CheckSquare size={16} /> : <Square size={16} />}
             </button>
 
-            {/* Folder Toggle */}
             {item.is_folder ? (
               <div
-                onClick={() => toggleFolder(item.id)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.4rem',
-                  cursor: 'pointer',
-                  fontWeight: 600,
-                  color: 'var(--text-primary)',
-                }}
+                onClick={() => toggleFolder(item)}
+                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontWeight: 600, color: 'var(--text-primary)' }}
               >
                 {isExpanded ? <ChevronDown size={14} color="#94a3b8" /> : <ChevronRight size={14} color="#94a3b8" />}
                 {isExpanded ? <FolderOpen size={18} color="#0078d4" /> : <Folder size={18} color="#0078d4" />}
                 <span>{item.name}</span>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                  ({item.children?.length || 0} files)
-                </span>
+                {kids && <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>({kids.length} items)</span>}
+                {loadingFolder === item.id && <RefreshCw size={12} className="animate-spin" />}
               </div>
             ) : (
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                 {renderFileIcon(item.name)}
                 <span style={{ fontSize: '0.875rem', color: 'var(--text-primary)' }}>{item.name}</span>
+                {unsupported && <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>(not supported)</span>}
               </div>
             )}
           </div>
 
-          {/* Metadata & Direct Link */}
           {!item.is_folder && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
               <span>{formatBytes(item.size)}</span>
@@ -214,30 +195,23 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
                 <a
                   href={item.web_url}
                   target="_blank"
-                  rel="noreferrer"
-                  title="Open original document in OneDrive"
-                  style={{
-                    color: 'var(--text-secondary)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.2rem',
-                    textDecoration: 'none',
-                  }}
+                  rel="noopener noreferrer"
+                  title="Open the original file"
+                  style={{ color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.2rem', textDecoration: 'none' }}
                 >
-                  <ExternalLink size={12} /> OneDrive
+                  <ExternalLink size={12} /> Open
                 </a>
               )}
             </div>
           )}
         </div>
 
-        {/* Render Folder Children */}
-        {item.is_folder && isExpanded && item.children && (
-          <div>{item.children.map((child) => renderItem(child, level + 1))}</div>
-        )}
+        {item.is_folder && isExpanded && kids && <div>{kids.map((child) => renderItem(child, level + 1))}</div>}
       </div>
     );
   }
+
+  const provider = driveType === 'google_drive' ? 'google' : 'microsoft';
 
   return (
     <div className="glass-panel" style={{ padding: '1.75rem' }}>
@@ -321,21 +295,11 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
         </div>
 
         <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-          Browsing {driveType === 'google_drive' ? 'Google Shared Drive' : 'OneDrive Root'} &bull; Delta Change Detection Active
+          Selecting a folder indexes everything inside it, including subfolders.
         </span>
       </div>
 
-      {/* Top Search & Actions Bar */}
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          gap: '1rem',
-          marginBottom: '1.25rem',
-          flexWrap: 'wrap',
-        }}
-      >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
         <div style={{ position: 'relative', flex: 1, minWidth: '240px' }}>
           <Search size={16} color="#64748b" style={{ position: 'absolute', left: '12px', top: '12px' }} />
           <input
@@ -357,80 +321,64 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <button
-            className="btn btn-secondary"
-            onClick={() => fetchTree()}
-            disabled={loading}
-            title="Refresh cloud items"
-          >
+          <button className="btn btn-secondary" onClick={() => fetchTree()} disabled={loading} title="Refresh">
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh
           </button>
-
-          <button
-            className="btn btn-primary"
-            disabled={selectedItems.length === 0 || isIndexing}
-            onClick={() => onIndexSelection(selectedItems.map((i) => i.id), selectedItems)}
-          >
+          <button className="btn btn-primary" disabled={selectedItems.length === 0 || isIndexing} onClick={submitSelection}>
             <Database size={16} />
-            {isIndexing ? 'Indexing...' : `Index ${selectedItems.length} Selected Documents`}
+            {isIndexing ? 'Indexing...' : `Index ${selectedItems.length} selected`}
           </button>
         </div>
       </div>
 
-      {/* Selected Counter Notice */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '0.6rem 1rem',
-          background: 'rgba(0, 120, 212, 0.08)',
-          border: '1px solid rgba(0, 120, 212, 0.2)',
-          borderRadius: 'var(--radius-md)',
-          marginBottom: '1.25rem',
-          fontSize: '0.8125rem',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#60a5fa' }}>
-          <Sparkles size={14} />
-          <span>
-            <strong>{selectedItems.length} documents</strong> ready for metadata extraction, chunking, and pgvector embeddings.
-          </span>
-        </div>
-        <button
-          onClick={() => {
-            const allSelected = selectedItems.length > 0;
-            const updated: Record<string, boolean> = {};
-            if (!allSelected) {
-              for (const it of items) {
-                if (!it.is_folder) updated[it.id] = true;
-                if (it.children) it.children.forEach((c) => (updated[c.id] = true));
-              }
-            }
-            setSelectedIds(updated);
+      {(selectedItems.length > 0 || submitError) && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '0.6rem 1rem',
+            background: submitError ? 'rgba(244, 63, 94, 0.08)' : 'rgba(0, 120, 212, 0.08)',
+            border: `1px solid ${submitError ? 'rgba(244, 63, 94, 0.3)' : 'rgba(0, 120, 212, 0.2)'}`,
+            borderRadius: 'var(--radius-md)',
+            marginBottom: '1.25rem',
+            fontSize: '0.8125rem',
           }}
-          style={{ background: 'transparent', border: 'none', color: '#93c5fd', cursor: 'pointer', fontSize: '0.75rem' }}
         >
-          {selectedItems.length > 0 ? 'Deselect All' : 'Select All'}
-        </button>
-      </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: submitError ? '#fb7185' : '#60a5fa' }}>
+            <Sparkles size={14} />
+            <span>
+              {submitError ||
+                `${selectedFiles} file${selectedFiles === 1 ? '' : 's'} and ${selectedFolders} folder${selectedFolders === 1 ? '' : 's'} selected.`}
+            </span>
+          </div>
+          <button
+            onClick={() => setSelected({})}
+            style={{ background: 'transparent', border: 'none', color: '#93c5fd', cursor: 'pointer', fontSize: '0.75rem' }}
+          >
+            Clear selection
+          </button>
+        </div>
+      )}
 
-      {/* Tree Content */}
-      <div
-        style={{
-          maxHeight: '520px',
-          overflowY: 'auto',
-          paddingRight: '0.5rem',
-        }}
-      >
+      <div style={{ maxHeight: '520px', overflowY: 'auto', paddingRight: '0.5rem' }}>
         {loading ? (
           <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
             <RefreshCw size={24} className="animate-spin" style={{ margin: '0 auto 0.75rem' }} />
-            <p>Loading OneDrive directory tree...</p>
+            <p>Loading folders...</p>
+          </div>
+        ) : error ? (
+          <div style={{ textAlign: 'center', padding: '2.5rem 1rem', color: 'var(--text-secondary)' }}>
+            <p style={{ marginBottom: '1rem' }}>{error.message}</p>
+            {(error.code === 'drive_not_connected' || error.status === 401) && (
+              <button className="btn btn-primary" onClick={() => startOAuth(provider).catch((e) => setSubmitError(e.message))}>
+                <Link2 size={14} /> Connect {driveType === 'google_drive' ? 'Google Drive' : 'OneDrive'}
+              </button>
+            )}
           </div>
         ) : items.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-            <p>No OneDrive documents found.</p>
+            <p>This folder is empty. Add documents to it in your drive, then refresh.</p>
           </div>
         ) : (
           items.map((item) => renderItem(item))

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { RefreshCw, CheckCircle2, AlertCircle, Database, X } from 'lucide-react';
 import { IngestionJob } from '../../types';
-import { getAuthHeaders } from '../../services/api';
+import { fetchJob } from '../../services/api';
 
 interface IngestionModalProps {
   jobId: string;
@@ -13,31 +13,31 @@ export function IngestionModal({ jobId, onClose, onComplete }: IngestionModalPro
   const [job, setJob] = useState<IngestionJob | null>(null);
 
   useEffect(() => {
-    let interval: any;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
     async function poll() {
       try {
-        const res = await fetch(`/api/ingestion/${jobId}`, { headers: getAuthHeaders() });
-        if (res.ok) {
-          const data = await res.json();
-          setJob(data);
-          if (data.status === 'COMPLETED' || data.status === 'FAILED' || data.status === 'COMPLETED_WITH_ERRORS') {
-            clearInterval(interval);
-            onComplete();
-          }
+        const data = await fetchJob(jobId);
+        if (stopped) return;
+        setJob(data);
+        if (data.status !== 'PENDING' && data.status !== 'PROCESSING') {
+          onComplete();
+          return;
         }
       } catch (e) {
         console.error('Failed to poll ingestion job', e);
       }
+      timer = setTimeout(poll, 1200);
     }
-
     poll();
-    interval = setInterval(poll, 1000);
-    return () => clearInterval(interval);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
   }, [jobId]);
 
-  const percent = job?.total_files
-    ? Math.round((job.processed_files / job.total_files) * 100)
-    : 0;
+  const percent = job?.progress_percent ?? 0;
+  const problems = (job?.result?.files || []).filter((f) => f.status === 'FAILED' || f.status === 'UNSUPPORTED');
 
   return (
     <div
@@ -66,7 +66,7 @@ export function IngestionModal({ jobId, onClose, onComplete }: IngestionModalPro
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
             <Database size={20} color="#0078d4" />
-            <h3 style={{ fontSize: '1.15rem', fontWeight: 700 }}>Ingesting OneDrive Documents</h3>
+            <h3 style={{ fontSize: '1.15rem', fontWeight: 700 }}>Indexing documents</h3>
           </div>
           <button
             onClick={onClose}
@@ -125,7 +125,7 @@ export function IngestionModal({ jobId, onClose, onComplete }: IngestionModalPro
             </p>
           </div>
           <div>
-            <span style={{ color: 'var(--text-muted)' }}>pgvector Chunks:</span>
+            <span style={{ color: 'var(--text-muted)' }}>Passages indexed:</span>
             <p style={{ fontWeight: 700, fontSize: '1.1rem', color: '#10b981', marginTop: '0.2rem' }}>
               {job?.total_chunks || 0}
             </p>
@@ -133,20 +133,30 @@ export function IngestionModal({ jobId, onClose, onComplete }: IngestionModalPro
         </div>
 
         {job?.status === 'COMPLETED' ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#34d399', marginBottom: '1.5rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#34d399', marginBottom: '1rem' }}>
             <CheckCircle2 size={18} />
-            <span>All documents successfully parsed, embedded, and indexed!</span>
+            <span>{problems.length ? 'Finished. Some files could not be indexed:' : 'All selected documents are indexed and searchable.'}</span>
           </div>
-        ) : job?.status === 'FAILED' ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fb7185', marginBottom: '1.5rem' }}>
+        ) : job?.status === 'FAILED' || job?.status === 'COMPLETED_WITH_ERRORS' ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fb7185', marginBottom: '1rem' }}>
             <AlertCircle size={18} />
-            <span>Ingestion failed: {job.error_message || 'Unknown error'}</span>
+            <span>{job.status === 'FAILED' ? 'Indexing failed' : 'Finished with errors'}{job.error_message ? `: ${job.error_message}` : ''}</span>
           </div>
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
             <RefreshCw size={16} className="animate-spin" />
-            <span>Extracting metadata, creating chunks, and generating embeddings...</span>
+            <span>Downloading, reading and indexing your files...</span>
           </div>
+        )}
+
+        {problems.length > 0 && (
+          <ul style={{ maxHeight: '160px', overflowY: 'auto', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '1.5rem', paddingLeft: '1.1rem' }}>
+            {problems.map((f, i) => (
+              <li key={i}>
+                <strong>{f.name}</strong>: {f.reason || f.status.toLowerCase()}
+              </li>
+            ))}
+          </ul>
         )}
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>

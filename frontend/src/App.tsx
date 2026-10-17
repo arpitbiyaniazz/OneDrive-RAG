@@ -12,14 +12,14 @@ import {
   Sun,
   Moon,
 } from 'lucide-react';
-import { HealthStatus, TelemetryStatus, OneDriveItem, UserProfile } from './types';
+import { HealthStatus, UserProfile } from './types';
 import {
+  AUTH_EXPIRED_EVENT,
+  IngestSelection,
+  completeOAuth,
   fetchHealth,
-  fetchTelemetryStatus,
   fetchCurrentUser,
   logoutUser,
-  exchangeAuthCode,
-  exchangeGoogleAuthCode,
   startIngestion,
   fetchChatSessions,
   deleteChatSession,
@@ -53,7 +53,7 @@ export function App() {
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
   const [health, setHealth] = useState<HealthStatus | null>(null);
-  const [telemetry, setTelemetry] = useState<TelemetryStatus | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   // Conversational Chatbot Session Management
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -82,51 +82,37 @@ export function App() {
 
   useEffect(() => {
     async function initApp() {
+      setAuthLoading(true);
+      fetchHealth().then(setHealth).catch(() => setHealth(null));
       try {
-        setAuthLoading(true);
-
-        // 1. Check for OAuth redirect code in URL
         const params = new URLSearchParams(window.location.search);
         const code = params.get('code');
-        const state = params.get('state') || undefined;
-
-        if (code) {
-          try {
-            const isGoogle =
-              window.location.pathname.includes('google') ||
-              code.startsWith('mock_google') ||
-              (params.get('scope') && params.get('scope')!.includes('google')) ||
-              (params.get('scope') && params.get('scope')!.includes('googleapis'));
-
-            const authRes = isGoogle
-              ? await exchangeGoogleAuthCode(code, state)
-              : await exchangeAuthCode(code, state);
-
-            setCurrentUser(authRes.user);
-            // Redirect to root after successful OAuth — ensures chat page loads
-            window.history.replaceState({}, document.title, '/');
-          } catch (e) {
-            console.error('Failed to exchange OAuth code', e);
-            // Redirect to root even on failure to avoid stale callback URL
-            window.history.replaceState({}, document.title, '/');
+        const oauthError = params.get('error_description') || params.get('error');
+        if (code || oauthError) {
+          // OAuth redirect back from Microsoft (/auth/callback) or Google (/auth/google/callback)
+          const provider = window.location.pathname.includes('google') ? 'google' : 'microsoft';
+          window.history.replaceState({}, document.title, '/');
+          if (oauthError) {
+            setAuthError(oauthError);
+          } else {
+            try {
+              setCurrentUser(await completeOAuth(provider, code!, params.get('state')));
+            } catch (e) {
+              setAuthError((e as Error).message);
+            }
           }
-        } else {
-          // 2. Fetch authenticated profile (using stored JWT from localStorage)
-          const user = await fetchCurrentUser();
-          setCurrentUser(user);
         }
-
-        // 3. Load backend health
-        const [h, t] = await Promise.all([fetchHealth(), fetchTelemetryStatus()]);
-        setHealth(h);
-        setTelemetry(t);
-      } catch (err: any) {
-        console.warn('Backend connection warning:', err.message);
+        const user = await fetchCurrentUser();
+        if (user) setCurrentUser(user);
       } finally {
         setAuthLoading(false);
       }
     }
     initApp();
+
+    const onExpired = () => setCurrentUser(null);
+    window.addEventListener(AUTH_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
   }, []);
 
   async function loadUserSessions() {
@@ -183,13 +169,9 @@ export function App() {
     }
   }
 
-  async function handleIndexSelection(selectedIds: string[], items: OneDriveItem[]) {
-    try {
-      const data = await startIngestion(selectedIds, items, '/Company');
-      setActiveJobId(data.job_id);
-    } catch (e) {
-      console.error('Failed to trigger ingestion', e);
-    }
+  async function handleIndexSelection(items: IngestSelection[]) {
+    const job = await startIngestion(items);
+    setActiveJobId(job.job_id);
   }
 
   // Render Login Page if user is not authenticated
@@ -198,7 +180,7 @@ export function App() {
       <LoginPage
         onLoginSuccess={(user) => setCurrentUser(user)}
         health={health}
-        telemetry={telemetry}
+        initialError={authError}
         theme={theme}
         onToggleTheme={toggleTheme}
       />

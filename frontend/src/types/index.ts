@@ -1,29 +1,13 @@
 export interface HealthStatus {
   status: string;
-  project: string;
   version: string;
-  environment: string;
-  mock_onedrive_mode: boolean;
-}
-
-export interface TelemetryStatus {
-  opentelemetry: {
-    service_name: string;
-    tracer_active: boolean;
-    otlp_endpoint: string;
-  };
-  langfuse: {
-    host: string;
-    client_active: boolean;
-    configured: boolean;
-  };
+  sandbox_mode: boolean;
 }
 
 export interface UserProfile {
   id: string;
   email: string;
   full_name?: string;
-  is_active?: boolean;
   onedrive_connected?: boolean;
   gdrive_connected?: boolean;
   sandbox_mode?: boolean;
@@ -41,10 +25,10 @@ export interface OneDriveItem {
   web_url?: string;
   path: string;
   drive_type?: DriveType;
-  children?: OneDriveItem[];
+  supported?: boolean;
 }
 
-export type CloudItem = OneDriveItem;
+export type DocumentStatus = 'PENDING' | 'INDEXED' | 'FAILED' | 'UNSUPPORTED' | 'DELETED';
 
 export interface DocumentRecord {
   id: string;
@@ -52,39 +36,53 @@ export interface DocumentRecord {
   file_type: string;
   drive_type?: DriveType;
   folder_path: string;
-  file_size: number;
-  modified_date: string;
-  onedrive_url?: string;
-  status: 'PENDING' | 'INDEXED' | 'FAILED' | 'DELETED';
-  last_ingested_at?: string;
+  file_size: number | null;
+  modified_date: string | null;
+  url?: string | null;
+  status: DocumentStatus;
+  chunk_count: number;
+  error_message?: string | null;
+  last_ingested_at?: string | null;
 }
 
 export interface Citation {
   source_id: number;
+  document_id?: string;
   filename: string;
-  page?: number;
-  section?: string;
+  file_type?: string;
+  location?: string | null;
+  page?: number | null;
+  section?: string | null;
   drive_type?: DriveType;
-  onedrive_url?: string;
+  url?: string | null;
 }
 
 export interface ChatMessage {
   id: string;
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant';
   content: string;
   citations?: Citation[];
-  langfuse_trace_id?: string;
-  feedback?: number;
+  feedback?: number | null;
   timestamp: string;
+  persisted?: boolean;
+  isError?: boolean;
+}
+
+export interface IngestionFileResult {
+  name: string;
+  status: string;
+  reason?: string;
 }
 
 export interface IngestionJob {
-  id: string;
-  status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
-  folder_path: string;
+  job_id: string;
+  job_type: 'ingest' | 'sync';
+  status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'COMPLETED_WITH_ERRORS' | 'FAILED';
   total_files: number;
   processed_files: number;
   failed_files: number;
   total_chunks: number;
-  error_message?: string;
+  progress_percent: number;
+  result?: { files?: IngestionFileResult[]; summary?: Record<string, number> } | null;
+  error_message?: string | null;
 }

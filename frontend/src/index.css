@@ -442,3 +442,27 @@ body {
   background: rgba(15, 23, 42, 0.28);
 }
 
+
+/* Inline source citations: [n] rendered as small superscript links */
+.citation-ref {
+  font-size: 0.68em;
+  line-height: 0;
+  margin-left: 1px;
+}
+.citation-ref a,
+.citation-ref span {
+  display: inline-block;
+  min-width: 1.35em;
+  padding: 0 0.3em;
+  border-radius: 6px;
+  background: var(--brand-bg);
+  border: 1px solid var(--app-border);
+  color: var(--brand-cyan);
+  font-weight: 700;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+.citation-ref a:hover {
+  border-color: var(--brand-primary);
+}

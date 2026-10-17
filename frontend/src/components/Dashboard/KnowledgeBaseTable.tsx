@@ -9,9 +9,10 @@ import {
   RefreshCw,
   FolderSync,
   CheckCircle2,
+  Trash2,
 } from 'lucide-react';
-import { DocumentRecord } from '../../types';
-import { getAuthHeaders } from '../../services/api';
+import { DocumentRecord, IngestionJob } from '../../types';
+import { deleteDocument, fetchDocuments, fetchJob, fetchKnowledgeBaseStats, startSync } from '../../services/api';
 
 export function KnowledgeBaseTable() {
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
@@ -29,25 +30,20 @@ export function KnowledgeBaseTable() {
 
   async function handleSync() {
     setSyncing(true);
-    setSyncMessage(null);
+    setSyncMessage('Checking every indexed document for changes...');
     try {
-      const res = await fetch('/api/sync/start?background=false', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const s = data.summary;
-        if (s) {
-          setSyncMessage(`Sync Complete: ${s.total_scanned} scanned (${s.new_files} new, ${s.updated_files} updated, ${s.unchanged_files} unchanged) in ${s.duration_seconds}s.`);
-        } else {
-          setSyncMessage(data.message || 'Sync complete.');
-        }
-        await loadData();
+      let job: IngestionJob = await startSync();
+      while (job.status === 'PENDING' || job.status === 'PROCESSING') {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        job = await fetchJob(job.job_id);
       }
+      const s = job.result?.summary || {};
+      const parts = Object.entries(s).map(([k, v]) => `${v} ${k.toLowerCase()}`);
+      setSyncMessage(`Sync ${job.status === 'COMPLETED' ? 'complete' : 'finished with errors'}: ${parts.join(', ') || 'nothing to do'}.` +
+        (job.error_message ? ` ${job.error_message}` : ''));
+      await loadData();
     } catch (e) {
-      console.error('Failed to trigger sync', e);
-      setSyncMessage('Failed to run incremental sync.');
+      setSyncMessage(`Sync failed: ${(e as Error).message}`);
     } finally {
       setSyncing(false);
     }
@@ -56,24 +52,27 @@ export function KnowledgeBaseTable() {
   async function loadData() {
     setLoading(true);
     try {
-      const [docsRes, statsRes] = await Promise.all([
-        fetch('/api/documents', { headers: getAuthHeaders() }),
-        fetch('/api/documents/stats', { headers: getAuthHeaders() }),
-      ]);
-      if (docsRes.ok && statsRes.ok) {
-        const dData = await docsRes.json();
-        const sData = await statsRes.json();
-        setDocuments(dData.documents || []);
-        setStats(sData);
-      }
+      const [docs, s] = await Promise.all([fetchDocuments(), fetchKnowledgeBaseStats()]);
+      setDocuments(docs.documents);
+      setStats(s);
     } catch (e) {
-      console.error('Failed to load KB data', e);
+      console.error('Failed to load knowledge base', e);
     } finally {
       setLoading(false);
     }
   }
 
-  function formatBytes(bytes: number) {
+  async function handleDelete(doc: DocumentRecord) {
+    if (!window.confirm(`Remove "${doc.filename}" from the knowledge base? The file in your drive is not touched.`)) return;
+    try {
+      await deleteDocument(doc.id);
+      await loadData();
+    } catch (e) {
+      setSyncMessage(`Could not remove the document: ${(e as Error).message}`);
+    }
+  }
+
+  function formatBytes(bytes: number | null) {
     if (!bytes) return '0 B';
     const k = 1024;
     const sizes = ['B', 'KB', 'MB', 'GB'];
@@ -288,7 +287,7 @@ export function KnowledgeBaseTable() {
               {filteredDocs.length === 0 ? (
                 <tr>
                   <td colSpan={7} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-                    No indexed documents match your query. Go to the Cloud Drive browser to index files.
+                    No documents match. Use the drive browser to index files or folders.
                   </td>
                 </tr>
               ) : (
@@ -359,20 +358,42 @@ export function KnowledgeBaseTable() {
                         {formatBytes(doc.file_size)}
                       </td>
                       <td style={{ padding: '0.85rem 1rem' }}>
-                        <span className="badge badge-success">
-                          {doc.status}
+                        <span
+                          className={`badge ${doc.status === 'INDEXED' ? 'badge-success' : 'badge-info'}`}
+                          title={doc.error_message || (doc.status === 'INDEXED' ? `${doc.chunk_count} passages indexed` : undefined)}
+                          style={doc.status === 'FAILED' || doc.status === 'UNSUPPORTED' ? { background: 'rgba(244,63,94,0.15)', color: '#fb7185' } : undefined}
+                        >
+                          {doc.status === 'INDEXED' ? `Indexed (${doc.chunk_count})` : doc.status === 'UNSUPPORTED' ? 'Not supported' : doc.status}
                         </span>
+                        {doc.error_message && doc.status !== 'INDEXED' && (
+                          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.25rem', maxWidth: '260px' }}>
+                            {doc.error_message}
+                          </div>
+                        )}
                       </td>
                       <td style={{ padding: '0.85rem 1rem', textAlign: 'right' }}>
-                        <a
-                          href={doc.onedrive_url || '#'}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="btn btn-secondary"
-                          style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }}
-                        >
-                          <ExternalLink size={12} /> {isGDrive ? 'View in Drive' : 'View in OneDrive'}
-                        </a>
+                        <div style={{ display: 'inline-flex', gap: '0.5rem' }}>
+                          {doc.url && (
+                            <a
+                              href={doc.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="btn btn-secondary"
+                              style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }}
+                            >
+                              <ExternalLink size={12} /> {isGDrive ? 'View in Drive' : 'View in OneDrive'}
+                            </a>
+                          )}
+                          <button
+                            onClick={() => handleDelete(doc)}
+                            className="btn btn-secondary"
+                            style={{ padding: '0.35rem 0.6rem', fontSize: '0.75rem' }}
+                            title="Remove from knowledge base"
+                            aria-label={`Remove ${doc.filename} from knowledge base`}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );

@@ -7,7 +7,6 @@ import {
   Copy,
   FolderSync,
   Database,
-  ChevronDown,
   StopCircle,
   Bot,
   Sparkles,
@@ -15,9 +14,9 @@ import {
   Sun,
   Moon,
 } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
 import { ChatMessage, Citation } from '../../types';
-import { getAuthHeaders } from '../../services/api';
+import { apiFetch, errorFrom, fetchSessionMessages, sendFeedback } from '../../services/api';
+import { AnswerMarkdown } from './AnswerMarkdown';
 
 interface ChatBoxProps {
   sessionId: string | null;
@@ -28,6 +27,44 @@ interface ChatBoxProps {
   onOpenSidebar?: () => void;
   theme?: 'dark' | 'light';
   onToggleTheme?: () => void;
+}
+
+interface StreamEvent {
+  status?: 'searching' | 'generating';
+  token?: string;
+  done?: boolean;
+  error?: string;
+  message_id?: string;
+  citations?: Citation[];
+}
+
+const STATUS_TEXT: Record<string, string> = {
+  searching: 'Searching your documents...',
+  generating: 'Writing the answer...',
+};
+
+/** Parses a Server-Sent Events stream, handling events split across network chunks. */
+async function readEvents(body: ReadableStream<Uint8Array>, onEvent: (event: StreamEvent) => void) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.indexOf('\n\n');
+    while (boundary !== -1) {
+      const raw = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const data = raw
+        .split('\n')
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trimStart())
+        .join('\n');
+      if (data) onEvent(JSON.parse(data));
+      boundary = buffer.indexOf('\n\n');
+    }
+  }
 }
 
 export function ChatBox({
@@ -43,22 +80,18 @@ export function ChatBox({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputQuery, setInputQuery] = useState<string>('');
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
-  const [feedbackSent, setFeedbackSent] = useState<Record<string, number>>({});
+  const [streamStatus, setStreamStatus] = useState<string>('searching');
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState<string>('Enterprise RAG (Mistral AI & Hybrid)');
-  const [isModelDropdownOpen, setIsModelDropdownOpen] = useState<boolean>(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const activeSessionIdRef = useRef<string | null>(sessionId);
 
-  // Auto-scroll on new message / token stream
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isStreaming]);
 
-  // Adjust textarea height dynamically
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
@@ -66,203 +99,106 @@ export function ChatBox({
     }
   }, [inputQuery]);
 
-  // Focus textarea on load / new session
   useEffect(() => {
     textareaRef.current?.focus();
   }, [sessionId]);
 
-  // Load existing messages when session changes, or reset for new chat
+  // Load the selected session (skipped when the session id was just assigned by our own stream).
   useEffect(() => {
-    // If sessionId matches what is already active in this component (e.g. assigned during streaming), do not re-fetch
-    if (activeSessionIdRef.current === sessionId) {
-      return;
-    }
+    if (activeSessionIdRef.current === sessionId) return;
     activeSessionIdRef.current = sessionId;
-
+    abortControllerRef.current?.abort();
     if (!sessionId) {
       setMessages([]);
       return;
     }
-
-    // Fetch existing messages for this session
-    async function loadSessionMessages() {
-      try {
-        const res = await fetch(`/api/chat/sessions/${sessionId}/messages`, {
-          headers: getAuthHeaders(),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.messages && data.messages.length > 0) {
-            setMessages(
-              data.messages.map((m: any) => ({
-                id: m.id,
-                role: m.role,
-                content: m.content,
-                citations: m.citations || undefined,
-                langfuse_trace_id: m.langfuse_trace_id || undefined,
-                feedback: m.feedback,
-                timestamp: m.created_at,
-              }))
-            );
-          }
-        }
-      } catch (e) {
-        console.error('Failed to load session messages', e);
-      }
-    }
-
-    loadSessionMessages();
+    let cancelled = false;
+    fetchSessionMessages(sessionId)
+      .then((data) => {
+        if (cancelled) return;
+        setMessages(
+          data.messages.map((m) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            citations: m.citations || [],
+            feedback: m.feedback,
+            timestamp: m.created_at,
+            persisted: true,
+          }))
+        );
+      })
+      .catch((e) => console.error('Failed to load session messages', e));
+    return () => {
+      cancelled = true;
+    };
   }, [sessionId]);
 
+  function updateMessage(id: string, patch: (m: ChatMessage) => Partial<ChatMessage>) {
+    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch(m) } : m)));
+  }
+
   async function handleSend(queryText?: string) {
-    const q = queryText || inputQuery;
-    if (!q.trim() || isStreaming) return;
+    const q = (queryText ?? inputQuery).trim();
+    if (!q || isStreaming) return;
 
     setInputQuery('');
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-    }
-
-    const userMsgId = 'user_' + Date.now();
-    const assistantMsgId = 'asst_' + Date.now();
-
-    const userMessage: ChatMessage = {
-      id: userMsgId,
-      role: 'user',
-      content: q,
-      timestamp: new Date().toISOString(),
-    };
-
-    const initialAssistantMessage: ChatMessage = {
-      id: assistantMsgId,
-      role: 'assistant',
-      content: '',
-      timestamp: new Date().toISOString(),
-    };
-
-    setMessages((prev) => [...prev, userMessage, initialAssistantMessage]);
+    const now = new Date().toISOString();
+    let assistantId = `pending_${Date.now()}`;
+    setMessages((prev) => [
+      ...prev,
+      { id: `user_${Date.now()}`, role: 'user', content: q, timestamp: now },
+      { id: assistantId, role: 'assistant', content: '', timestamp: now },
+    ]);
     setIsStreaming(true);
+    setStreamStatus('searching');
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
+    let received = '';
 
     try {
-      const response = await fetch('/api/chat/stream', {
+      const response = await apiFetch('/chat/stream', {
         method: 'POST',
-        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ query: q, session_id: sessionId }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q, session_id: activeSessionIdRef.current }),
         signal: controller.signal,
       });
+      if (!response.ok || !response.body) throw await errorFrom(response);
 
-      if (!response.ok) {
-        throw new Error(`Server returned HTTP ${response.status}`);
+      const newSessionId = response.headers.get('X-Chat-Session-Id');
+      if (newSessionId && newSessionId !== activeSessionIdRef.current) {
+        activeSessionIdRef.current = newSessionId;
+        onSessionChange(newSessionId, q);
       }
 
-      const receivedSessionId = response.headers.get('X-Chat-Session-Id');
-      if (receivedSessionId && receivedSessionId !== sessionId) {
-        activeSessionIdRef.current = receivedSessionId;
-        onSessionChange(receivedSessionId, q);
-      }
-
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      let accumulatedText = '';
-      let extractedCitations: Citation[] = [];
-      let traceId = '';
-
-      if (reader) {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const chunkStr = decoder.decode(value, { stream: true });
-          const lines = chunkStr.split('\n\n');
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const parsed = JSON.parse(line.substring(6));
-                if (parsed.token) {
-                  accumulatedText += parsed.token;
-                  setMessages((prev) => {
-                    const hasAssistant = prev.some((m) => m.id === assistantMsgId);
-                    if (!hasAssistant) {
-                      return [
-                        ...prev,
-                        {
-                          id: assistantMsgId,
-                          role: 'assistant',
-                          content: accumulatedText,
-                          timestamp: new Date().toISOString(),
-                        },
-                      ];
-                    }
-                    return prev.map((m) =>
-                      m.id === assistantMsgId ? { ...m, content: accumulatedText } : m
-                    );
-                  });
-                }
-                if (parsed.done) {
-                  if (parsed.session_id && parsed.session_id !== sessionId) {
-                    activeSessionIdRef.current = parsed.session_id;
-                    onSessionChange(parsed.session_id, q);
-                  }
-                  extractedCitations = parsed.citations || [];
-                  traceId = parsed.trace_id || '';
-                  setMessages((prev) => {
-                    const hasAssistant = prev.some((m) => m.id === assistantMsgId);
-                    if (!hasAssistant) {
-                      return [
-                        ...prev,
-                        {
-                          id: assistantMsgId,
-                          role: 'assistant',
-                          content: accumulatedText,
-                          citations: extractedCitations,
-                          langfuse_trace_id: traceId,
-                          timestamp: new Date().toISOString(),
-                        },
-                      ];
-                    }
-                    return prev.map((m) =>
-                      m.id === assistantMsgId
-                        ? {
-                            ...m,
-                            content: accumulatedText,
-                            citations: extractedCitations,
-                            langfuse_trace_id: traceId,
-                          }
-                        : m
-                    );
-                  });
-                }
-              } catch {
-                // Ignore parse errors on partial chunks
-              }
-            }
-          }
+      await readEvents(response.body, (event) => {
+        if (event.status) setStreamStatus(event.status);
+        if (event.token) {
+          received += event.token;
+          const text = received;
+          updateMessage(assistantId, () => ({ content: text }));
         }
-      }
-    } catch (e: any) {
-      if (e.name === 'AbortError') {
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantMsgId
-              ? { ...m, content: m.content + '\n\n*(Generation stopped by user)*' }
-              : m
-          )
-        );
+        if (event.error) {
+          updateMessage(assistantId, (m) => ({
+            content: m.content ? `${m.content}\n\n_${event.error}_` : event.error!,
+            isError: !m.content,
+          }));
+        } else if (event.done && event.message_id) {
+          const serverId = event.message_id;
+          updateMessage(assistantId, () => ({ id: serverId, citations: event.citations || [], persisted: true }));
+          assistantId = serverId;
+        }
+      });
+    } catch (e: unknown) {
+      const err = e as Error;
+      if (err.name === 'AbortError') {
+        updateMessage(assistantId, (m) => ({ content: m.content ? `${m.content}\n\n_(Stopped.)_` : '_(Stopped.)_' }));
       } else {
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantMsgId
-              ? {
-                  ...m,
-                  content: `⚠️ Unable to retrieve response: ${e.message}`,
-                }
-              : m
-          )
-        );
+        updateMessage(assistantId, (m) => ({
+          content: m.content || `Unable to get an answer: ${err.message}`,
+          isError: !m.content,
+        }));
       }
     } finally {
       setIsStreaming(false);
@@ -271,22 +207,15 @@ export function ChatBox({
   }
 
   function handleStopGeneration() {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
+    abortControllerRef.current?.abort();
   }
 
-  async function handleFeedback(messageId: string, traceId?: string, score: number = 1) {
-    if (!traceId) return;
+  async function handleFeedback(messageId: string, score: 1 | -1) {
     try {
-      await fetch('/api/chat/feedback', {
-        method: 'POST',
-        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ message_id: messageId, trace_id: traceId, feedback: score }),
-      });
-      setFeedbackSent((prev) => ({ ...prev, [messageId]: score }));
+      await sendFeedback(messageId, score);
+      updateMessage(messageId, () => ({ feedback: score }));
     } catch (e) {
-      console.error('Failed to submit feedback to Langfuse', e);
+      console.error('Failed to submit feedback', e);
     }
   }
 
@@ -304,26 +233,10 @@ export function ChatBox({
   }
 
   const samplePrompts = [
-    {
-      title: 'Summarize Executive Briefing',
-      subtitle: 'Q3 Enterprise AI & Cloud Milestones (.gslides)',
-      query: 'Summarize the Executive Briefing Q3 slides including strategic milestones and multi-cloud architecture.',
-    },
-    {
-      title: 'Analyze Cloud Budget & Costs',
-      subtitle: '2026 infrastructure spending breakdown (.gsheet)',
-      query: 'What are our projected cloud infrastructure costs for Google Cloud vs Microsoft Azure in 2026?',
-    },
-    {
-      title: 'Review AI Security Policies',
-      subtitle: 'Data Loss Prevention & model guidelines (.gdoc)',
-      query: 'What are the enterprise DLP and model access policies defined for AI queries?',
-    },
-    {
-      title: 'Kubernetes Hybrid Architecture',
-      subtitle: 'GKE + AKS service mesh & pgvector specs (.pdf)',
-      query: 'Explain the Kubernetes hybrid cloud architecture and RAG microservices topology.',
-    },
+    { title: 'What documents do I have?', subtitle: 'List everything that is indexed', query: 'Which documents do I have?' },
+    { title: 'Summarize a document', subtitle: 'e.g. "Summarize Projects.docx"', query: 'Summarize my most recent document' },
+    { title: 'Find a fact', subtitle: 'Numbers, dates, names, policies', query: 'What deadlines are mentioned in my documents?' },
+    { title: 'Compare across files', subtitle: 'Answers cite every source', query: 'What topics appear in more than one of my documents?' },
   ];
 
   return (
@@ -350,7 +263,7 @@ export function ChatBox({
           zIndex: 10,
         }}
       >
-        {/* Left Section: Sidebar Open Toggle (when collapsed) + Model Selector dropdown pill */}
+        {/* Left Section: Sidebar Open Toggle (when collapsed) + title */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           {!isSidebarOpen && onOpenSidebar && (
             <button
@@ -384,102 +297,7 @@ export function ChatBox({
             </button>
           )}
 
-          {/* Model Selector dropdown pill */}
-          <div style={{ position: 'relative' }}>
-            <button
-              onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem',
-                padding: '0.4rem 0.85rem',
-                background: 'var(--app-surface)',
-                border: '1px solid var(--app-border)',
-                borderRadius: 'var(--radius-md)',
-                color: 'var(--app-text)',
-                fontSize: '0.85rem',
-                fontWeight: 600,
-                cursor: 'pointer',
-                transition: 'all 0.15s ease',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.borderColor = 'var(--brand-primary)';
-              }}
-              onMouseLeave={(e) => {
-                if (!isModelDropdownOpen) {
-                  e.currentTarget.style.borderColor = 'var(--app-border)';
-                }
-              }}
-            >
-              <div
-                style={{
-                  width: '18px',
-                  height: '18px',
-                  borderRadius: '4px',
-                  background: 'var(--brand-gradient)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <Bot size={11} color="#ffffff" />
-              </div>
-              <span>{selectedModel}</span>
-              <ChevronDown size={14} color="var(--app-text-muted)" />
-            </button>
-
-            {isModelDropdownOpen && (
-              <div
-                style={{
-                  position: 'absolute',
-                  top: 'calc(100% + 6px)',
-                  left: 0,
-                  width: '280px',
-                  background: 'var(--app-surface)',
-                  border: '1px solid var(--app-border)',
-                  borderRadius: 'var(--radius-md)',
-                  boxShadow: '0 10px 30px rgba(0,0,0,0.6)',
-                  padding: '0.4rem',
-                  zIndex: 50,
-                }}
-              >
-                {[
-                  { name: 'Enterprise RAG (Mistral AI & Hybrid)', desc: 'Fast, high-efficiency enterprise reasoning' },
-                  { name: 'Enterprise RAG (GPT-4o Mini & Hybrid)', desc: 'Optimized speed & multi-cloud retrieval' },
-                  { name: 'Enterprise RAG High-Precision (GPT-4o)', desc: 'Deep synthesis & complex table analysis' },
-                ].map((model) => (
-                  <div
-                    key={model.name}
-                    onClick={() => {
-                      setSelectedModel(model.name);
-                      setIsModelDropdownOpen(false);
-                    }}
-                    style={{
-                      padding: '0.55rem 0.75rem',
-                      borderRadius: 'var(--radius-sm)',
-                      cursor: 'pointer',
-                      background: selectedModel === model.name ? 'var(--brand-bg)' : 'transparent',
-                      border: selectedModel === model.name ? '1px solid rgba(0, 120, 212, 0.4)' : '1px solid transparent',
-                      marginBottom: '0.2rem',
-                    }}
-                    onMouseEnter={(e) => {
-                      if (selectedModel !== model.name) e.currentTarget.style.background = 'var(--app-surface-hover)';
-                    }}
-                    onMouseLeave={(e) => {
-                      if (selectedModel !== model.name) e.currentTarget.style.background = 'transparent';
-                    }}
-                  >
-                    <div style={{ fontSize: '0.825rem', fontWeight: 600, color: 'var(--app-text)' }}>
-                      {model.name}
-                    </div>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--app-text-muted)' }}>
-                      {model.desc}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <span style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--app-text)' }}>Document Assistant</span>
         </div>
 
         {/* Right Section: Theme Toggle + Knowledge Base Drawer */}
@@ -618,7 +436,7 @@ export function ChatBox({
                   marginBottom: '2.5rem',
                 }}
               >
-                Welcome, {userName}. Ask questions across your synced OneDrive and Google Drive files. Answers are verified and grounded in enterprise documents with clickable citations.
+                Welcome, {userName}. Ask questions about your synced OneDrive and Google Drive files. Every answer links to the passages it is based on.
               </p>
 
               {/* Sample Prompt Cards */}
@@ -739,11 +557,13 @@ export function ChatBox({
                         {/* Content */}
                         <div className="prose">
                           {msg.content ? (
-                            <ReactMarkdown>{msg.content}</ReactMarkdown>
+                            <div style={msg.isError ? { color: '#fb7185' } : undefined}>
+                              <AnswerMarkdown content={msg.content} citations={msg.citations} />
+                            </div>
                           ) : (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--app-text-muted)' }}>
                               <Sparkles size={16} color="var(--brand-cyan)" className="animate-spin" />
-                              <span>Searching multi-cloud documents & generating answer...</span>
+                              <span>{STATUS_TEXT[streamStatus] || STATUS_TEXT.searching}</span>
                             </div>
                           )}
                         </div>
@@ -787,33 +607,33 @@ export function ChatBox({
                             )}
                           </button>
 
-                          {msg.langfuse_trace_id && (
+                          {msg.persisted && (
                             <>
                               <button
-                                onClick={() => handleFeedback(msg.id, msg.langfuse_trace_id, 1)}
+                                onClick={() => handleFeedback(msg.id, 1)}
                                 style={{
-                                  background: feedbackSent[msg.id] === 1 ? 'rgba(16,185,129,0.15)' : 'transparent',
+                                  background: msg.feedback === 1 ? 'rgba(16,185,129,0.15)' : 'transparent',
                                   border: 'none',
-                                  color: feedbackSent[msg.id] === 1 ? '#34d399' : 'var(--app-text-muted)',
+                                  color: msg.feedback === 1 ? '#34d399' : 'var(--app-text-muted)',
                                   cursor: 'pointer',
                                   padding: '2px 4px',
                                   borderRadius: '4px',
                                 }}
-                                title="Good response (logged to Langfuse)"
+                                title="Helpful answer"
                               >
                                 <ThumbsUp size={13} />
                               </button>
                               <button
-                                onClick={() => handleFeedback(msg.id, msg.langfuse_trace_id, -1)}
+                                onClick={() => handleFeedback(msg.id, -1)}
                                 style={{
-                                  background: feedbackSent[msg.id] === -1 ? 'rgba(244,63,94,0.15)' : 'transparent',
+                                  background: msg.feedback === -1 ? 'rgba(244,63,94,0.15)' : 'transparent',
                                   border: 'none',
-                                  color: feedbackSent[msg.id] === -1 ? '#fb7185' : 'var(--app-text-muted)',
+                                  color: msg.feedback === -1 ? '#fb7185' : 'var(--app-text-muted)',
                                   cursor: 'pointer',
                                   padding: '2px 4px',
                                   borderRadius: '4px',
                                 }}
-                                title="Poor response (logged to Langfuse)"
+                                title="Not helpful"
                               >
                                 <ThumbsDown size={13} />
                               </button>
@@ -921,7 +741,7 @@ export function ChatBox({
               title="Browse and index OneDrive and Google Drive files"
             >
               <FolderSync size={13} color="var(--brand-cyan)" />
-              <span>Drive Knowledge Attached</span>
+              <span>Manage documents</span>
             </button>
 
             {/* Right side: Send or Stop button */}
@@ -979,7 +799,7 @@ export function ChatBox({
             letterSpacing: '0.01em',
           }}
         >
-          Enterprise Cloud RAG • Verified against synced OneDrive & Google Drive sources • OpenTelemetry & Langfuse monitored
+          Answers come only from your indexed files and can still contain mistakes. Check the linked sources.
         </span>
       </div>
     </div>
