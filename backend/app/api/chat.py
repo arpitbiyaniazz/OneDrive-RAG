@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.auth import get_current_user
 from app.core.config import settings
 from app.core.telemetry.langfuse_client import log_score, rag_trace
+from app.core.telemetry.otel_setup import get_current_trace_id
 from app.db.database import AsyncSessionLocal, get_db, utcnow
 from app.models.chat import ChatMessage, ChatSession
 from app.models.user import User
@@ -99,6 +100,7 @@ async def stream_chat(req: ChatStreamRequest, db: AsyncSession = Depends(get_db)
 
     session_id, user_id, question = session.id, user.id, req.query
     message_id = str(uuid.uuid4())
+    otel_trace_id = get_current_trace_id()  # links the Langfuse trace to the request's OpenTelemetry trace
 
     async def events():
         answer: List[str] = []
@@ -108,7 +110,8 @@ async def stream_chat(req: ChatStreamRequest, db: AsyncSession = Depends(get_db)
         try:
             yield _sse({"status": "searching", "session_id": session_id})
             with rag_trace("rag_chat", input={"question": question},
-                           metadata={**rag_service.PROMPT_METADATA, "session_id": session_id}) as trace:
+                           metadata={**rag_service.PROMPT_METADATA, "session_id": session_id,
+                                     "otel_trace_id": otel_trace_id}) as trace:
                 trace_id = trace.trace_id
                 async with AsyncSessionLocal() as work_db:
                     prepared = await rag_service.prepare(work_db, user_id, question, history)
