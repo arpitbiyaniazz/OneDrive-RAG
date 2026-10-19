@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Folder,
   FolderOpen,
@@ -22,54 +22,107 @@ import { ApiError, IngestSelection, fetchDriveRoot, fetchFolderItems, startOAuth
 interface FolderTreeProps {
   onIndexSelection: (items: IngestSelection[]) => Promise<void>;
   isIndexing?: boolean;
+  /** Drive shown first (e.g. the drive the user just connected). */
+  initialDrive?: DriveType;
+  onDriveChange?: (drive: DriveType) => void;
 }
 
-export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeProps) {
-  const [driveType, setDriveType] = useState<DriveType>('onedrive');
+const toApiError = (e: unknown) => (e instanceof ApiError ? e : new ApiError((e as Error).message, 0));
+
+/** Items remember the drive they were listed from, so a selection is always indexed from the right drive. */
+const withDrive = (items: OneDriveItem[], drive: DriveType) => items.map((i) => (i.drive_type ? i : { ...i, drive_type: drive }));
+
+function without<T>(record: Record<string, T>, key: string): Record<string, T> {
+  const next = { ...record };
+  delete next[key];
+  return next;
+}
+
+export function FolderTree({ onIndexSelection, isIndexing = false, initialDrive = 'onedrive', onDriveChange }: FolderTreeProps) {
+  const [driveType, setDriveType] = useState<DriveType>(initialDrive);
   const [items, setItems] = useState<OneDriveItem[]>([]);
   const [children, setChildren] = useState<Record<string, OneDriveItem[]>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [loadingFolder, setLoadingFolder] = useState<string | null>(null);
+  const [loadingFolders, setLoadingFolders] = useState<Record<string, boolean>>({});
+  const [folderErrors, setFolderErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<ApiError | null>(null);
   const [selected, setSelected] = useState<Record<string, OneDriveItem>>({});
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState<boolean>(false);
+  const submittingRef = useRef(false);
+  /** Bumped on every tree load (and on unmount): responses for an older load are ignored. */
+  const treeRequestRef = useRef(0);
 
   useEffect(() => {
     fetchTree(driveType);
   }, [driveType]);
 
+  useEffect(
+    () => () => {
+      treeRequestRef.current++;
+    },
+    []
+  );
+
+  function switchDrive(drive: DriveType) {
+    if (drive === driveType) return;
+    setDriveType(drive);
+    onDriveChange?.(drive);
+  }
+
   async function fetchTree(target: DriveType = driveType) {
+    const request = ++treeRequestRef.current;
     setLoading(true);
     setError(null);
     setChildren({});
     setExpanded({});
+    setLoadingFolders({});
+    setFolderErrors({});
     setSelected({});
+    setSubmitError(null);
     try {
-      setItems((await fetchDriveRoot(target)).items);
+      const data = await fetchDriveRoot(target);
+      if (request !== treeRequestRef.current) return; // the user switched drives meanwhile
+      setItems(withDrive(data.items, target));
     } catch (e) {
+      if (request !== treeRequestRef.current) return;
       setItems([]);
-      setError(e instanceof ApiError ? e : new ApiError((e as Error).message, 0));
+      setError(toApiError(e));
     } finally {
-      setLoading(false);
+      if (request === treeRequestRef.current) setLoading(false);
     }
   }
 
-  async function toggleFolder(folder: OneDriveItem) {
+  async function loadFolder(folder: OneDriveItem) {
+    const request = treeRequestRef.current;
+    const drive = folder.drive_type ?? driveType;
+    setLoadingFolders((prev) => ({ ...prev, [folder.id]: true }));
+    setFolderErrors((prev) => without(prev, folder.id));
+    try {
+      const data = await fetchFolderItems(drive, folder.id);
+      if (request !== treeRequestRef.current) return;
+      setChildren((prev) => ({ ...prev, [folder.id]: withDrive(data.items, drive) }));
+    } catch (e) {
+      if (request !== treeRequestRef.current) return;
+      const err = toApiError(e);
+      if (err.code === 'drive_not_connected') {
+        // The drive grant itself is gone: offer to reconnect instead of a per-folder error.
+        setItems([]);
+        setError(err);
+      } else {
+        setFolderErrors((prev) => ({ ...prev, [folder.id]: err.message }));
+      }
+    } finally {
+      if (request === treeRequestRef.current) setLoadingFolders((prev) => without(prev, folder.id));
+    }
+  }
+
+  function toggleFolder(folder: OneDriveItem) {
     const open = !expanded[folder.id];
     setExpanded((prev) => ({ ...prev, [folder.id]: open }));
-    if (open && !children[folder.id]) {
-      setLoadingFolder(folder.id);
-      try {
-        const data = await fetchFolderItems(driveType, folder.id);
-        setChildren((prev) => ({ ...prev, [folder.id]: data.items }));
-      } catch (e) {
-        setError(e instanceof ApiError ? e : new ApiError((e as Error).message, 0));
-      } finally {
-        setLoadingFolder(null);
-      }
-    }
+    if (open && !children[folder.id] && !loadingFolders[folder.id]) loadFolder(folder);
   }
 
   function toggleItemSelection(item: OneDriveItem) {
@@ -87,14 +140,21 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
   const selectedFolders = selectedItems.length - selectedFiles;
 
   async function submitSelection() {
+    // A ref, not state: a double click fires twice before React re-renders the disabled button.
+    if (submittingRef.current || selectedItems.length === 0) return;
+    submittingRef.current = true;
+    setSubmitting(true);
     setSubmitError(null);
     try {
       await onIndexSelection(
-        selectedItems.map((i) => ({ id: i.id, drive_type: driveType, is_folder: i.is_folder, name: i.name }))
+        selectedItems.map((i) => ({ id: i.id, drive_type: i.drive_type ?? driveType, is_folder: i.is_folder, name: i.name }))
       );
       setSelected({});
     } catch (e) {
       setSubmitError((e as Error).message);
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
     }
   }
 
@@ -129,10 +189,11 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
   }
 
   function renderItem(item: OneDriveItem, level: number = 0): JSX.Element | null {
-    const isExpanded = expanded[item.id];
+    const isExpanded = Boolean(expanded[item.id]);
     const isSelected = Boolean(selected[item.id]);
     const unsupported = item.supported === false;
     const kids = children[item.id];
+    const folderError = folderErrors[item.id];
     if (searchQuery && !item.is_folder && !item.name.toLowerCase().includes(searchQuery.toLowerCase())) return null;
 
     return (
@@ -151,45 +212,64 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
           }}
           title={unsupported ? 'This file type cannot be indexed' : undefined}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1, minWidth: 0 }}>
             <button
+              type="button"
               onClick={() => toggleItemSelection(item)}
               disabled={unsupported}
               aria-label={`${isSelected ? 'Deselect' : 'Select'} ${item.name}`}
+              aria-pressed={isSelected}
               style={{
                 background: 'transparent',
                 border: 'none',
                 cursor: unsupported ? 'not-allowed' : 'pointer',
                 display: 'flex',
                 alignItems: 'center',
-                color: isSelected ? '#38bdf8' : 'var(--text-muted)',
+                color: isSelected ? 'var(--info-text)' : 'var(--text-muted)',
               }}
             >
               {isSelected ? <CheckSquare size={16} /> : <Square size={16} />}
             </button>
 
             {item.is_folder ? (
-              <div
+              <button
+                type="button"
                 onClick={() => toggleFolder(item)}
-                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontWeight: 600, color: 'var(--text-primary)' }}
+                aria-expanded={isExpanded}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.4rem',
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                  color: 'var(--text-primary)',
+                  background: 'transparent',
+                  border: 'none',
+                  padding: 0,
+                  fontFamily: 'inherit',
+                  fontSize: 'inherit',
+                  lineHeight: 'inherit',
+                  textAlign: 'left',
+                  minWidth: 0,
+                }}
               >
                 {isExpanded ? <ChevronDown size={14} color="#94a3b8" /> : <ChevronRight size={14} color="#94a3b8" />}
                 {isExpanded ? <FolderOpen size={18} color="#0078d4" /> : <Folder size={18} color="#0078d4" />}
                 <span>{item.name}</span>
                 {kids && <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>({kids.length} items)</span>}
-                {loadingFolder === item.id && <RefreshCw size={12} className="animate-spin" />}
-              </div>
+                {loadingFolders[item.id] && <RefreshCw size={12} className="animate-spin" aria-label="Loading" />}
+              </button>
             ) : (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', minWidth: 0 }}>
                 {renderFileIcon(item.name)}
-                <span style={{ fontSize: '0.875rem', color: 'var(--text-primary)' }}>{item.name}</span>
+                <span style={{ fontSize: '0.875rem', color: 'var(--text-primary)', overflowWrap: 'anywhere' }}>{item.name}</span>
                 {unsupported && <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>(not supported)</span>}
               </div>
             )}
           </div>
 
           {!item.is_folder && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', fontSize: '0.75rem', color: 'var(--text-muted)', flexShrink: 0 }}>
               <span>{formatBytes(item.size)}</span>
               {item.web_url && (
                 <a
@@ -206,15 +286,41 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
           )}
         </div>
 
+        {item.is_folder && isExpanded && folderError && (
+          <div
+            role="alert"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '0.5rem',
+              margin: '0 0 0.35rem 1.5rem',
+              fontSize: '0.75rem',
+              color: 'var(--danger-text)',
+            }}
+          >
+            <span>Could not open this folder: {folderError}</span>
+            <button
+              type="button"
+              onClick={() => loadFolder(item)}
+              style={{ background: 'transparent', border: 'none', color: 'var(--info-text)', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600, padding: 0 }}
+            >
+              Try again
+            </button>
+          </div>
+        )}
+
         {item.is_folder && isExpanded && kids && <div>{kids.map((child) => renderItem(child, level + 1))}</div>}
       </div>
     );
   }
 
   const provider = driveType === 'google_drive' ? 'google' : 'microsoft';
+  const driveLabel = driveType === 'google_drive' ? 'Google Drive' : 'OneDrive';
+  const notConnected = error?.code === 'drive_not_connected';
 
   return (
-    <div className="glass-panel" style={{ padding: '1.75rem' }}>
+    <div className="glass-panel" style={{ padding: 'clamp(1rem, 4vw, 1.75rem)' }}>
       {/* Cloud Storage Provider Switcher */}
       <div
         style={{
@@ -228,7 +334,7 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
           borderBottom: '1px solid var(--border-color)',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.6rem' }}>
           <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
             Active Cloud Storage:
           </span>
@@ -242,7 +348,9 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
             }}
           >
             <button
-              onClick={() => setDriveType('onedrive')}
+              type="button"
+              onClick={() => switchDrive('onedrive')}
+              aria-pressed={driveType === 'onedrive'}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -258,7 +366,7 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
                 transition: 'all 0.15s ease',
               }}
             >
-              <svg width="14" height="14" viewBox="0 0 21 21" fill="none">
+              <svg width="14" height="14" viewBox="0 0 21 21" fill="none" aria-hidden="true">
                 <rect x="1" y="1" width="9" height="9" fill="#f25022" />
                 <rect x="11" y="1" width="9" height="9" fill="#7fba00" />
                 <rect x="1" y="11" width="9" height="9" fill="#00a4ef" />
@@ -267,7 +375,9 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
               Microsoft OneDrive
             </button>
             <button
-              onClick={() => setDriveType('google_drive')}
+              type="button"
+              onClick={() => switchDrive('google_drive')}
+              aria-pressed={driveType === 'google_drive'}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -283,7 +393,7 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
                 transition: 'all 0.15s ease',
               }}
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
                 <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
                 <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
@@ -295,16 +405,17 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
         </div>
 
         <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-          Selecting a folder indexes everything inside it, including subfolders.
+          Selecting a folder indexes everything inside it, including subfolders. Selected folders also stay in sync: new files in them are added each time you sync.
         </span>
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
-        <div style={{ position: 'relative', flex: 1, minWidth: '240px' }}>
-          <Search size={16} color="#64748b" style={{ position: 'absolute', left: '12px', top: '12px' }} />
+        <div style={{ position: 'relative', flex: 1, minWidth: 'min(240px, 100%)' }}>
+          <Search size={16} color="#64748b" style={{ position: 'absolute', left: '12px', top: '12px' }} aria-hidden="true" />
           <input
             type="text"
             placeholder="Filter files by name..."
+            aria-label="Filter files by name"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             style={{
@@ -315,28 +426,35 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
               border: '1px solid var(--border-color)',
               color: 'var(--text-primary)',
               fontSize: '0.875rem',
-              outline: 'none',
             }}
           />
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <button className="btn btn-secondary" onClick={() => fetchTree()} disabled={loading} title="Refresh">
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
+          <button type="button" className="btn btn-secondary" onClick={() => fetchTree()} disabled={loading} title="Refresh">
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh
           </button>
-          <button className="btn btn-primary" disabled={selectedItems.length === 0 || isIndexing} onClick={submitSelection}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={selectedItems.length === 0 || isIndexing || submitting}
+            onClick={submitSelection}
+          >
             <Database size={16} />
-            {isIndexing ? 'Indexing...' : `Index ${selectedItems.length} selected`}
+            {submitting ? 'Starting...' : isIndexing ? 'Indexing...' : `Index ${selectedItems.length} selected`}
           </button>
         </div>
       </div>
 
       {(selectedItems.length > 0 || submitError) && (
         <div
+          role={submitError ? 'alert' : undefined}
           style={{
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '0.5rem',
             padding: '0.6rem 1rem',
             background: submitError ? 'rgba(244, 63, 94, 0.08)' : 'rgba(0, 120, 212, 0.08)',
             border: `1px solid ${submitError ? 'rgba(244, 63, 94, 0.3)' : 'rgba(0, 120, 212, 0.2)'}`,
@@ -345,34 +463,42 @@ export function FolderTree({ onIndexSelection, isIndexing = false }: FolderTreeP
             fontSize: '0.8125rem',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: submitError ? '#fb7185' : '#60a5fa' }}>
-            <Sparkles size={14} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: submitError ? 'var(--danger-text)' : 'var(--info-text)' }}>
+            <Sparkles size={14} aria-hidden="true" />
             <span>
               {submitError ||
                 `${selectedFiles} file${selectedFiles === 1 ? '' : 's'} and ${selectedFolders} folder${selectedFolders === 1 ? '' : 's'} selected.`}
             </span>
           </div>
           <button
-            onClick={() => setSelected({})}
-            style={{ background: 'transparent', border: 'none', color: '#93c5fd', cursor: 'pointer', fontSize: '0.75rem' }}
+            type="button"
+            onClick={() => {
+              setSelected({});
+              setSubmitError(null);
+            }}
+            style={{ background: 'transparent', border: 'none', color: 'var(--info-text)', cursor: 'pointer', fontSize: '0.75rem' }}
           >
-            Clear selection
+            {selectedItems.length > 0 ? 'Clear selection' : 'Dismiss'}
           </button>
         </div>
       )}
 
       <div style={{ maxHeight: '520px', overflowY: 'auto', paddingRight: '0.5rem' }}>
         {loading ? (
-          <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-            <RefreshCw size={24} className="animate-spin" style={{ margin: '0 auto 0.75rem' }} />
+          <div role="status" style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
+            <RefreshCw size={24} className="animate-spin" style={{ margin: '0 auto 0.75rem' }} aria-hidden="true" />
             <p>Loading folders...</p>
           </div>
         ) : error ? (
           <div style={{ textAlign: 'center', padding: '2.5rem 1rem', color: 'var(--text-secondary)' }}>
-            <p style={{ marginBottom: '1rem' }}>{error.message}</p>
-            {(error.code === 'drive_not_connected' || error.status === 401) && (
-              <button className="btn btn-primary" onClick={() => startOAuth(provider).catch((e) => setSubmitError(e.message))}>
-                <Link2 size={14} /> Connect {driveType === 'google_drive' ? 'Google Drive' : 'OneDrive'}
+            <p style={{ marginBottom: '1rem' }}>{error.message || (notConnected ? `${driveLabel} is not connected yet.` : 'Could not load this drive.')}</p>
+            {notConnected && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => startOAuth(provider).catch((e) => setSubmitError((e as Error).message))}
+              >
+                <Link2 size={14} /> Connect {driveLabel}
               </button>
             )}
           </div>

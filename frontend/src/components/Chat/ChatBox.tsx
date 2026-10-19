@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import {
   ArrowUp,
   ThumbsUp,
@@ -13,14 +14,20 @@ import {
   PanelLeftOpen,
   Sun,
   Moon,
+  RefreshCw,
+  AlertCircle,
+  X,
 } from 'lucide-react';
 import { ChatMessage, Citation } from '../../types';
-import { apiFetch, errorFrom, fetchSessionMessages, sendFeedback } from '../../services/api';
+import { ApiError, SessionMessage, apiFetch, errorFrom, fetchSessionMessages, sendFeedback } from '../../services/api';
+import { MOBILE_QUERY, useMediaQuery } from '../../hooks';
 import { AnswerMarkdown } from './AnswerMarkdown';
 
 interface ChatBoxProps {
   sessionId: string | null;
   onSessionChange: (newSessionId: string, firstQuery?: string) => void;
+  /** Called when an answer stream ends, so the chat list can pick up the new title and time. */
+  onAnswerComplete?: () => void;
   onOpenKnowledgeDrawer: () => void;
   userName?: string;
   isSidebarOpen?: boolean;
@@ -30,7 +37,9 @@ interface ChatBoxProps {
 }
 
 interface StreamEvent {
-  status?: 'searching' | 'generating';
+  status?: 'searching' | 'generating' | 'reading';
+  parts?: number;
+  session_id?: string;
   token?: string;
   done?: boolean;
   error?: string;
@@ -38,10 +47,86 @@ interface StreamEvent {
   citations?: Citation[];
 }
 
+/** The answer being generated: its render key and the latest status event. */
+interface PendingAnswer {
+  key: string;
+  status: string;
+  parts?: number;
+}
+
+type LoadState = { status: 'idle' } | { status: 'loading' } | { status: 'error'; message: string };
+
+interface SendError {
+  text: string;
+  kind: 'error' | 'warning';
+}
+
 const STATUS_TEXT: Record<string, string> = {
   searching: 'Searching your documents...',
   generating: 'Writing the answer...',
+  reading: 'Reading the whole document...',
 };
+
+/** Same limit as the backend (MAX_QUERY_CHARS). */
+const MAX_QUERY_CHARS = 4000;
+/** Auto-scroll only follows new text while the reader is this close to the bottom. */
+const NEAR_BOTTOM_PX = 120;
+/** On touch devices focusing the input would pop up the on-screen keyboard over the answer. */
+const COARSE_POINTER = '(pointer: coarse)';
+
+function statusLabel(status: string, parts?: number): string {
+  const text = STATUS_TEXT[status] || STATUS_TEXT.searching;
+  return status === 'reading' && parts ? `${text} (${parts} parts)` : text;
+}
+
+const withNote = (content: string, note: string) => (content ? `${content}\n\n_${note}_` : `_${note}_`);
+
+const toChatMessage = (m: SessionMessage): ChatMessage => ({
+  id: m.id,
+  role: m.role,
+  content: m.content,
+  citations: m.citations ?? [],
+  feedback: m.feedback,
+  timestamp: m.created_at ?? '',
+  persisted: true,
+});
+
+function describeSendError(e: unknown): SendError {
+  if (e instanceof ApiError) {
+    // Rate limits come with a friendly message from the backend; show it as-is.
+    if (e.status === 429) return { text: e.message, kind: 'warning' };
+    return { text: `Could not send your question: ${e.message}`, kind: 'error' };
+  }
+  return { text: 'Could not reach the server. Check your connection and try again.', kind: 'error' };
+}
+
+/** Copies text; resolves false when the browser refuses (no Clipboard API outside https, or permission denied). */
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Fall through to the legacy path.
+  }
+  const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.appendChild(area);
+  try {
+    area.select();
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    area.remove();
+    opener?.focus();
+  }
+}
 
 /** Parses a Server-Sent Events stream, handling events split across network chunks. */
 async function readEvents(body: ReadableStream<Uint8Array>, onEvent: (event: StreamEvent) => void) {
@@ -67,9 +152,193 @@ async function readEvents(body: ReadableStream<Uint8Array>, onEvent: (event: Str
   }
 }
 
+interface MessageRowProps {
+  message: ChatMessage;
+  /** Status text of the answer being generated; only the in-flight message gets it. */
+  pendingStatus?: string;
+  copyResult?: 'copied' | 'failed';
+  onCopy: (text: string, messageId: string) => void;
+  onFeedback: (messageId: string, score: 1 | -1) => void;
+}
+
+/** One message; memoised so a streamed token only re-renders the message it belongs to. */
+const MessageRow = memo(function MessageRow({ message: msg, pendingStatus, copyResult, onCopy, onFeedback }: MessageRowProps) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '0.5rem',
+      }}
+      className="animate-fade-in"
+    >
+      {/* User Message */}
+      {msg.role === 'user' ? (
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <div
+            style={{
+              maxWidth: '82%',
+              background: 'var(--user-msg-bg)',
+              border: '1px solid var(--user-msg-border)',
+              borderRadius: '20px',
+              padding: '0.9rem 1.25rem',
+              color: 'var(--app-text)',
+              fontSize: '0.95rem',
+              lineHeight: '1.6',
+              boxShadow: 'var(--card-shadow)',
+              whiteSpace: 'pre-wrap',
+              overflowWrap: 'anywhere',
+            }}
+          >
+            {msg.content}
+          </div>
+        </div>
+      ) : (
+        /* Assistant Message */
+        <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+          {/* Logo Avatar: Electric Blue / Cyan Gradient */}
+          <div
+            style={{
+              width: '34px',
+              height: '34px',
+              borderRadius: '10px',
+              background: 'var(--brand-gradient)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#ffffff',
+              flexShrink: 0,
+              marginTop: '2px',
+              boxShadow: '0 4px 12px var(--brand-glow)',
+            }}
+          >
+            <Bot size={18} />
+          </div>
+
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {/* Header name */}
+            <div
+              style={{
+                fontSize: '0.85rem',
+                fontWeight: 700,
+                color: 'var(--brand-cyan)',
+                marginBottom: '0.4rem',
+              }}
+            >
+              Enterprise Cloud RAG
+            </div>
+
+            {/* Content */}
+            <div className="prose">
+              {msg.content ? (
+                <div className={msg.isError ? 'answer-error' : undefined}>
+                  <AnswerMarkdown content={msg.content} citations={msg.citations} />
+                </div>
+              ) : pendingStatus ? (
+                <div role="status" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--app-text-muted)' }}>
+                  <Sparkles size={16} color="var(--brand-cyan)" className="animate-spin" aria-hidden="true" />
+                  <span>{pendingStatus}</span>
+                </div>
+              ) : null}
+            </div>
+
+            {/* Action buttons (Copy, Feedback) */}
+            {msg.content && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.75rem',
+                  marginTop: '0.85rem',
+                  color: 'var(--app-text-muted)',
+                  fontSize: '0.75rem',
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => onCopy(msg.content, msg.id)}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'var(--app-text-muted)',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.3rem',
+                    padding: '2px 4px',
+                    borderRadius: '4px',
+                  }}
+                  title="Copy response"
+                >
+                  {copyResult === 'copied' ? (
+                    <>
+                      <Check size={13} color="var(--success-text)" />
+                      <span style={{ color: 'var(--success-text)' }}>Copied</span>
+                    </>
+                  ) : copyResult === 'failed' ? (
+                    <>
+                      <AlertCircle size={13} color="var(--danger-text)" />
+                      <span style={{ color: 'var(--danger-text)' }}>Copy failed</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy size={13} />
+                      <span>Copy</span>
+                    </>
+                  )}
+                </button>
+
+                {msg.persisted && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => onFeedback(msg.id, 1)}
+                      aria-pressed={msg.feedback === 1}
+                      aria-label="Helpful answer"
+                      style={{
+                        background: msg.feedback === 1 ? 'rgba(16,185,129,0.15)' : 'transparent',
+                        border: 'none',
+                        color: msg.feedback === 1 ? 'var(--success-text)' : 'var(--app-text-muted)',
+                        cursor: 'pointer',
+                        padding: '2px 4px',
+                        borderRadius: '4px',
+                      }}
+                      title="Helpful answer"
+                    >
+                      <ThumbsUp size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onFeedback(msg.id, -1)}
+                      aria-pressed={msg.feedback === -1}
+                      aria-label="Not helpful"
+                      style={{
+                        background: msg.feedback === -1 ? 'rgba(244,63,94,0.15)' : 'transparent',
+                        border: 'none',
+                        color: msg.feedback === -1 ? 'var(--danger-text)' : 'var(--app-text-muted)',
+                        cursor: 'pointer',
+                        padding: '2px 4px',
+                        borderRadius: '4px',
+                      }}
+                      title="Not helpful"
+                    >
+                      <ThumbsDown size={13} />
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
 export function ChatBox({
   sessionId,
   onSessionChange,
+  onAnswerComplete,
   onOpenKnowledgeDrawer,
   userName = 'there',
   isSidebarOpen = true,
@@ -77,20 +346,35 @@ export function ChatBox({
   theme = 'dark',
   onToggleTheme,
 }: ChatBoxProps) {
+  const isMobile = useMediaQuery(MOBILE_QUERY);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputQuery, setInputQuery] = useState<string>('');
-  const [isStreaming, setIsStreaming] = useState<boolean>(false);
-  const [streamStatus, setStreamStatus] = useState<string>('searching');
-  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [pending, setPending] = useState<PendingAnswer | null>(null);
+  const [loadState, setLoadState] = useState<LoadState>({ status: 'idle' });
+  const [sendError, setSendError] = useState<SendError | null>(null);
+  const [copyState, setCopyState] = useState<{ id: string; result: 'copied' | 'failed' } | null>(null);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const activeSessionIdRef = useRef<string | null>(sessionId);
+  const inputBarRef = useRef<HTMLDivElement>(null);
+  /** The in-flight question; null once it ends or when the user leaves the conversation. */
+  const requestRef = useRef<{ controller: AbortController } | null>(null);
+  const activeSessionIdRef = useRef<string | null>(null);
+  /** Bumped on every load and every send, so a stale history load is ignored. */
+  const loadEpochRef = useRef(0);
+  const copyTimerRef = useRef<number | undefined>(undefined);
+  const isStreaming = pending !== null;
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isStreaming]);
+    const el = scrollRef.current;
+    if (el && stickToBottomRef.current) el.scrollTop = el.scrollHeight;
+  }, [messages, pending]);
+
+  function handleScroll() {
+    const el = scrollRef.current;
+    if (el) stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
+  }
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -100,136 +384,192 @@ export function ChatBox({
   }, [inputQuery]);
 
   useEffect(() => {
-    textareaRef.current?.focus();
+    if (!window.matchMedia(COARSE_POINTER).matches) textareaRef.current?.focus();
   }, [sessionId]);
+
+  useEffect(
+    () => () => {
+      requestRef.current?.controller.abort();
+      requestRef.current = null;
+      window.clearTimeout(copyTimerRef.current);
+    },
+    []
+  );
+
+  const loadSession = useCallback((id: string) => {
+    const epoch = ++loadEpochRef.current;
+    setLoadState({ status: 'loading' });
+    fetchSessionMessages(id).then(
+      (data) => {
+        if (epoch !== loadEpochRef.current) return; // switched again, or a new question was already sent
+        stickToBottomRef.current = true;
+        setMessages(data.messages.map(toChatMessage));
+        setLoadState({ status: 'idle' });
+      },
+      (e: unknown) => {
+        if (epoch !== loadEpochRef.current) return;
+        setLoadState({ status: 'error', message: (e as Error).message || 'Unknown error' });
+      }
+    );
+  }, []);
 
   // Load the selected session (skipped when the session id was just assigned by our own stream).
   useEffect(() => {
     if (activeSessionIdRef.current === sessionId) return;
     activeSessionIdRef.current = sessionId;
-    abortControllerRef.current?.abort();
-    if (!sessionId) {
-      setMessages([]);
-      return;
+    const request = requestRef.current;
+    requestRef.current = null;
+    request?.controller.abort();
+    setPending(null);
+    setMessages([]);
+    setSendError(null);
+    stickToBottomRef.current = true;
+    if (sessionId) {
+      loadSession(sessionId);
+    } else {
+      loadEpochRef.current++;
+      setLoadState({ status: 'idle' });
     }
-    let cancelled = false;
-    fetchSessionMessages(sessionId)
-      .then((data) => {
-        if (cancelled) return;
-        setMessages(
-          data.messages.map((m) => ({
-            id: m.id,
-            role: m.role,
-            content: m.content,
-            citations: m.citations || [],
-            feedback: m.feedback,
-            timestamp: m.created_at,
-            persisted: true,
-          }))
-        );
-      })
-      .catch((e) => console.error('Failed to load session messages', e));
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId]);
+  }, [sessionId, loadSession]);
 
-  function updateMessage(id: string, patch: (m: ChatMessage) => Partial<ChatMessage>) {
-    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch(m) } : m)));
+  function adoptSession(id: string | null | undefined, firstQuery: string) {
+    if (!id || id === activeSessionIdRef.current) return;
+    activeSessionIdRef.current = id;
+    onSessionChange(id, firstQuery);
+  }
+
+  /** Puts the cursor back in the input unless the user is busy elsewhere (e.g. in the drawer). */
+  function refocusInput() {
+    if (window.matchMedia(COARSE_POINTER).matches) return;
+    const active = document.activeElement;
+    if (!active || active === document.body || inputBarRef.current?.contains(active)) textareaRef.current?.focus();
   }
 
   async function handleSend(queryText?: string) {
-    const q = (queryText ?? inputQuery).trim();
-    if (!q || isStreaming) return;
+    const q = (queryText ?? inputQuery).trim().slice(0, MAX_QUERY_CHARS);
+    if (!q || requestRef.current) return;
+    if (queryText === undefined) setInputQuery('');
+    setSendError(null);
+    loadEpochRef.current++; // a history load finishing now must not replace this exchange
+    setLoadState({ status: 'idle' });
 
-    setInputQuery('');
+    const request = { controller: new AbortController() };
+    requestRef.current = request;
+    const isCurrent = () => requestRef.current === request;
     const now = new Date().toISOString();
-    let assistantId = `pending_${Date.now()}`;
+    const userKey = `user_${Date.now()}`;
+    const answerKey = `pending_${Date.now()}`;
+    let answerId = answerKey;
+    stickToBottomRef.current = true;
     setMessages((prev) => [
       ...prev,
-      { id: `user_${Date.now()}`, role: 'user', content: q, timestamp: now },
-      { id: assistantId, role: 'assistant', content: '', timestamp: now },
+      { id: userKey, clientId: userKey, role: 'user', content: q, timestamp: now },
+      { id: answerKey, clientId: answerKey, role: 'assistant', content: '', timestamp: now },
     ]);
-    setIsStreaming(true);
-    setStreamStatus('searching');
+    setPending({ key: answerKey, status: 'searching' });
 
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
+    let started = false; // the server accepted the question and is streaming
+    let terminal = false; // a done or error event arrived
     let received = '';
+    const patchAnswer = (patch: (m: ChatMessage) => Partial<ChatMessage>) => {
+      const id = answerId;
+      setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch(m) } : m)));
+    };
 
     try {
       const response = await apiFetch('/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: q, session_id: activeSessionIdRef.current }),
-        signal: controller.signal,
+        signal: request.controller.signal,
       });
+      if (!isCurrent()) return;
       if (!response.ok || !response.body) throw await errorFrom(response);
-
-      const newSessionId = response.headers.get('X-Chat-Session-Id');
-      if (newSessionId && newSessionId !== activeSessionIdRef.current) {
-        activeSessionIdRef.current = newSessionId;
-        onSessionChange(newSessionId, q);
-      }
+      started = true;
+      adoptSession(response.headers.get('X-Chat-Session-Id'), q);
 
       await readEvents(response.body, (event) => {
-        if (event.status) setStreamStatus(event.status);
+        if (!isCurrent()) return;
+        if (event.session_id) adoptSession(event.session_id, q);
+        if (event.status) {
+          const { status, parts } = event;
+          setPending((p) => (p ? { ...p, status, parts } : p));
+        }
         if (event.token) {
           received += event.token;
           const text = received;
-          updateMessage(assistantId, () => ({ content: text }));
+          patchAnswer(() => ({ content: text }));
         }
         if (event.error) {
-          updateMessage(assistantId, (m) => ({
-            content: m.content ? `${m.content}\n\n_${event.error}_` : event.error!,
-            isError: !m.content,
-          }));
-        } else if (event.done && event.message_id) {
+          terminal = true;
+          const error = event.error;
           const serverId = event.message_id;
-          updateMessage(assistantId, () => ({ id: serverId, citations: event.citations || [], persisted: true }));
-          assistantId = serverId;
+          // A partial answer is saved under message_id, so adopting it lets feedback work.
+          patchAnswer((m) => ({
+            content: m.content ? `${m.content}\n\n_${error}_` : error,
+            isError: !m.content,
+            ...(serverId ? { id: serverId, persisted: Boolean(m.content) } : {}),
+          }));
+          if (serverId) answerId = serverId;
+        } else if (event.done) {
+          terminal = true;
+          const serverId = event.message_id;
+          const citations = event.citations ?? [];
+          patchAnswer(() => ({ citations, ...(serverId ? { id: serverId, persisted: true } : {}) }));
+          if (serverId) answerId = serverId;
         }
       });
+      // The stream closed without done/error: the connection dropped mid-answer.
+      if (isCurrent() && !terminal) {
+        patchAnswer((m) => ({ content: withNote(m.content, '(Connection lost.)'), isError: !m.content }));
+      }
     } catch (e: unknown) {
-      const err = e as Error;
-      if (err.name === 'AbortError') {
-        updateMessage(assistantId, (m) => ({ content: m.content ? `${m.content}\n\n_(Stopped.)_` : '_(Stopped.)_' }));
+      if (!isCurrent() || terminal) return;
+      if ((e as Error).name === 'AbortError') {
+        patchAnswer((m) => ({ content: withNote(m.content, '(Stopped.)') }));
+      } else if (!started) {
+        // The question never reached the assistant: take it back so it can be sent again.
+        setMessages((prev) => prev.filter((m) => m.id !== userKey && m.id !== answerKey));
+        setInputQuery((current) => (current.trim() ? current : q));
+        setSendError(describeSendError(e));
       } else {
-        updateMessage(assistantId, (m) => ({
-          content: m.content || `Unable to get an answer: ${err.message}`,
-          isError: !m.content,
-        }));
+        patchAnswer((m) => ({ content: withNote(m.content, '(Connection lost.)'), isError: !m.content }));
       }
     } finally {
-      setIsStreaming(false);
-      abortControllerRef.current = null;
+      if (isCurrent()) {
+        requestRef.current = null;
+        setPending(null);
+        if (started) onAnswerComplete?.();
+        refocusInput();
+      }
     }
   }
 
   function handleStopGeneration() {
-    abortControllerRef.current?.abort();
+    requestRef.current?.controller.abort();
   }
 
-  async function handleFeedback(messageId: string, score: 1 | -1) {
+  const handleFeedback = useCallback(async (messageId: string, score: 1 | -1) => {
     try {
       await sendFeedback(messageId, score);
-      updateMessage(messageId, () => ({ feedback: score }));
+      setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, feedback: score } : m)));
     } catch (e) {
       console.error('Failed to submit feedback', e);
     }
-  }
+  }, []);
 
-  function handleCopy(text: string, msgId: string) {
-    navigator.clipboard.writeText(text);
-    setCopiedId(msgId);
-    setTimeout(() => setCopiedId(null), 2000);
-  }
+  const handleCopy = useCallback(async (text: string, messageId: string) => {
+    const ok = await copyToClipboard(text);
+    setCopyState({ id: messageId, result: ok ? 'copied' : 'failed' });
+    window.clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = window.setTimeout(() => setCopyState(null), 2000);
+  }, []);
 
-  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
+  function handleKeyDown(e: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key !== 'Enter' || e.shiftKey) return;
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return; // an IME is composing (e.g. Japanese, Chinese)
+    e.preventDefault();
+    if (!isStreaming) handleSend();
   }
 
   const samplePrompts = [
@@ -238,6 +578,9 @@ export function ChatBox({
     { title: 'Find a fact', subtitle: 'Numbers, dates, names, policies', query: 'What deadlines are mentioned in my documents?' },
     { title: 'Compare across files', subtitle: 'Answers cite every source', query: 'What topics appear in more than one of my documents?' },
   ];
+
+  const canSend = inputQuery.trim().length > 0;
+  const pendingStatus = pending ? statusLabel(pending.status, pending.parts) : undefined;
 
   return (
     <div
@@ -256,7 +599,9 @@ export function ChatBox({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          padding: '0.85rem 1.5rem',
+          flexWrap: 'wrap',
+          gap: '0.5rem 0.75rem',
+          padding: isMobile ? '0.65rem 0.85rem' : '0.85rem 1.5rem',
           borderBottom: '1px solid var(--app-border)',
           background: 'var(--app-header-bg)',
           backdropFilter: 'blur(10px)',
@@ -264,9 +609,10 @@ export function ChatBox({
         }}
       >
         {/* Left Section: Sidebar Open Toggle (when collapsed) + title */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0 }}>
           {!isSidebarOpen && onOpenSidebar && (
             <button
+              type="button"
               onClick={onOpenSidebar}
               style={{
                 display: 'flex',
@@ -301,9 +647,10 @@ export function ChatBox({
         </div>
 
         {/* Right Section: Theme Toggle + Knowledge Base Drawer */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
           {onToggleTheme && (
             <button
+              type="button"
               onClick={onToggleTheme}
               style={{
                 display: 'flex',
@@ -342,6 +689,7 @@ export function ChatBox({
           )}
 
           <button
+            type="button"
             onClick={onOpenKnowledgeDrawer}
             style={{
               display: 'flex',
@@ -374,18 +722,61 @@ export function ChatBox({
 
       {/* Main Conversation Stream Viewport */}
       <div
+        ref={scrollRef}
+        onScroll={handleScroll}
         style={{
           flex: 1,
           overflowY: 'auto',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
-          padding: '1.5rem 1rem 8rem 1rem',
+          padding: isMobile ? '1rem 0.75rem 8rem 0.75rem' : '1.5rem 1rem 8rem 1rem',
         }}
       >
         <div style={{ width: '100%', maxWidth: '780px' }}>
-          {/* Empty State / Welcome Screen */}
-          {messages.length === 0 ? (
+          {messages.length === 0 && loadState.status === 'loading' ? (
+            <div
+              role="status"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '0.5rem',
+                minHeight: '40vh',
+                color: 'var(--app-text-muted)',
+                fontSize: '0.9rem',
+              }}
+            >
+              <RefreshCw size={16} className="animate-spin" aria-hidden="true" />
+              <span>Loading conversation...</span>
+            </div>
+          ) : messages.length === 0 && loadState.status === 'error' ? (
+            <div
+              role="alert"
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '1rem',
+                minHeight: '40vh',
+                textAlign: 'center',
+              }}
+            >
+              <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--danger-text)', fontSize: '0.9rem' }}>
+                <AlertCircle size={16} aria-hidden="true" />
+                Could not load this conversation: {loadState.message}
+              </span>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => activeSessionIdRef.current && loadSession(activeSessionIdRef.current)}
+              >
+                <RefreshCw size={14} /> Try again
+              </button>
+            </div>
+          ) : messages.length === 0 ? (
+            /* Empty State / Welcome Screen */
             <div
               style={{
                 display: 'flex',
@@ -443,17 +834,20 @@ export function ChatBox({
               <div
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(min(280px, 100%), 1fr))',
                   gap: '0.85rem',
                   width: '100%',
                   textAlign: 'left',
                 }}
               >
-                {samplePrompts.map((prompt, idx) => (
-                  <div
-                    key={idx}
+                {samplePrompts.map((prompt) => (
+                  <button
+                    key={prompt.query}
+                    type="button"
                     onClick={() => handleSend(prompt.query)}
                     style={{
+                      width: '100%',
+                      height: '100%',
                       padding: '1rem 1.15rem',
                       background: 'var(--app-surface)',
                       border: '1px solid var(--app-border)',
@@ -463,6 +857,10 @@ export function ChatBox({
                       display: 'flex',
                       flexDirection: 'column',
                       gap: '0.25rem',
+                      textAlign: 'left',
+                      fontFamily: 'inherit',
+                      lineHeight: 'inherit',
+                      color: 'inherit',
                     }}
                     onMouseEnter={(e) => {
                       e.currentTarget.style.borderColor = 'var(--brand-primary)';
@@ -483,171 +881,28 @@ export function ChatBox({
                     <span style={{ fontSize: '0.75rem', color: 'var(--app-text-muted)' }}>
                       {prompt.subtitle}
                     </span>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>
           ) : (
             /* Active Message History */
             <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-              {messages.map((msg) => (
-                <div
-                  key={msg.id}
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '0.5rem',
-                  }}
-                  className="animate-fade-in"
-                >
-                  {/* User Message */}
-                  {msg.role === 'user' ? (
-                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                      <div
-                        style={{
-                          maxWidth: '82%',
-                          background: 'var(--user-msg-bg)',
-                          border: '1px solid var(--user-msg-border)',
-                          borderRadius: '20px',
-                          padding: '0.9rem 1.25rem',
-                          color: 'var(--app-text)',
-                          fontSize: '0.95rem',
-                          lineHeight: '1.6',
-                          boxShadow: 'var(--card-shadow)',
-                        }}
-                      >
-                        {msg.content}
-                      </div>
-                    </div>
-                  ) : (
-                    /* Assistant Message */
-                    <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
-                      {/* Logo Avatar: Electric Blue / Cyan Gradient */}
-                      <div
-                        style={{
-                          width: '34px',
-                          height: '34px',
-                          borderRadius: '10px',
-                          background: 'var(--brand-gradient)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          color: '#ffffff',
-                          flexShrink: 0,
-                          marginTop: '2px',
-                          boxShadow: '0 4px 12px var(--brand-glow)',
-                        }}
-                      >
-                        <Bot size={18} />
-                      </div>
-
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        {/* Header name */}
-                        <div
-                          style={{
-                            fontSize: '0.85rem',
-                            fontWeight: 700,
-                            color: 'var(--brand-cyan)',
-                            marginBottom: '0.4rem',
-                          }}
-                        >
-                          Enterprise Cloud RAG
-                        </div>
-
-                        {/* Content */}
-                        <div className="prose">
-                          {msg.content ? (
-                            <div style={msg.isError ? { color: '#fb7185' } : undefined}>
-                              <AnswerMarkdown content={msg.content} citations={msg.citations} />
-                            </div>
-                          ) : (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--app-text-muted)' }}>
-                              <Sparkles size={16} color="var(--brand-cyan)" className="animate-spin" />
-                              <span>{STATUS_TEXT[streamStatus] || STATUS_TEXT.searching}</span>
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Action buttons (Copy, Feedback) */}
-                        <div
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '0.75rem',
-                            marginTop: '0.85rem',
-                            color: 'var(--app-text-muted)',
-                            fontSize: '0.75rem',
-                          }}
-                        >
-                          <button
-                            onClick={() => handleCopy(msg.content, msg.id)}
-                            style={{
-                              background: 'transparent',
-                              border: 'none',
-                              color: 'var(--app-text-muted)',
-                              cursor: 'pointer',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '0.3rem',
-                              padding: '2px 4px',
-                              borderRadius: '4px',
-                            }}
-                            title="Copy response"
-                          >
-                            {copiedId === msg.id ? (
-                              <>
-                                <Check size={13} color="#34d399" />
-                                <span style={{ color: '#34d399' }}>Copied</span>
-                              </>
-                            ) : (
-                              <>
-                                <Copy size={13} />
-                                <span>Copy</span>
-                              </>
-                            )}
-                          </button>
-
-                          {msg.persisted && (
-                            <>
-                              <button
-                                onClick={() => handleFeedback(msg.id, 1)}
-                                style={{
-                                  background: msg.feedback === 1 ? 'rgba(16,185,129,0.15)' : 'transparent',
-                                  border: 'none',
-                                  color: msg.feedback === 1 ? '#34d399' : 'var(--app-text-muted)',
-                                  cursor: 'pointer',
-                                  padding: '2px 4px',
-                                  borderRadius: '4px',
-                                }}
-                                title="Helpful answer"
-                              >
-                                <ThumbsUp size={13} />
-                              </button>
-                              <button
-                                onClick={() => handleFeedback(msg.id, -1)}
-                                style={{
-                                  background: msg.feedback === -1 ? 'rgba(244,63,94,0.15)' : 'transparent',
-                                  border: 'none',
-                                  color: msg.feedback === -1 ? '#fb7185' : 'var(--app-text-muted)',
-                                  cursor: 'pointer',
-                                  padding: '2px 4px',
-                                  borderRadius: '4px',
-                                }}
-                                title="Not helpful"
-                              >
-                                <ThumbsDown size={13} />
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
+              {messages.map((msg) => {
+                const key = msg.clientId ?? msg.id;
+                return (
+                  <MessageRow
+                    key={key}
+                    message={msg}
+                    pendingStatus={pending?.key === key ? pendingStatus : undefined}
+                    copyResult={copyState?.id === msg.id ? copyState.result : undefined}
+                    onCopy={handleCopy}
+                    onFeedback={handleFeedback}
+                  />
+                );
+              })}
             </div>
           )}
-          <div ref={messagesEndRef} />
         </div>
       </div>
 
@@ -661,24 +916,54 @@ export function ChatBox({
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
-          padding: '0.75rem 1.5rem 1.25rem 1.5rem',
+          padding: isMobile ? '0.5rem 0.75rem 0.75rem 0.75rem' : '0.75rem 1.5rem 1.25rem 1.5rem',
           background: 'linear-gradient(to top, var(--app-bg) 75%, transparent 100%)',
           zIndex: 20,
         }}
       >
+        {sendError && (
+          <div
+            role="alert"
+            style={{
+              width: '100%',
+              maxWidth: '780px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              padding: '0.55rem 0.85rem',
+              marginBottom: '0.5rem',
+              borderRadius: 'var(--radius-md)',
+              background: sendError.kind === 'warning' ? 'var(--warning-bg)' : 'var(--danger-bg)',
+              border: `1px solid ${sendError.kind === 'warning' ? 'var(--warning-border)' : 'var(--danger-border)'}`,
+              color: sendError.kind === 'warning' ? 'var(--warning-text)' : 'var(--danger-text)',
+              fontSize: '0.8rem',
+            }}
+          >
+            <AlertCircle size={14} style={{ flexShrink: 0 }} aria-hidden="true" />
+            <span style={{ flex: 1 }}>{sendError.text}</span>
+            <button
+              type="button"
+              onClick={() => setSendError(null)}
+              aria-label="Dismiss message"
+              style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', display: 'flex', padding: '2px' }}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
         <div
+          ref={inputBarRef}
+          className="chat-input"
           style={{
             width: '100%',
             maxWidth: '780px',
             background: 'var(--app-input-bg)',
-            border: '1px solid var(--app-border)',
             borderRadius: 'var(--radius-xl)',
-            boxShadow: 'var(--input-shadow)',
             padding: '0.75rem 1rem',
             display: 'flex',
             flexDirection: 'column',
             gap: '0.5rem',
-            transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
           }}
         >
           {/* Multiline auto-expanding textarea */}
@@ -686,10 +971,11 @@ export function ChatBox({
             ref={textareaRef}
             rows={1}
             value={inputQuery}
+            maxLength={MAX_QUERY_CHARS}
             onChange={(e) => setInputQuery(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Ask a question about your OneDrive or Google Drive documents..."
-            disabled={isStreaming}
+            aria-label="Ask a question about your documents"
             style={{
               width: '100%',
               background: 'transparent',
@@ -715,6 +1001,7 @@ export function ChatBox({
           >
             {/* Left side: Context badge */}
             <button
+              type="button"
               onClick={onOpenKnowledgeDrawer}
               style={{
                 display: 'inline-flex',
@@ -732,7 +1019,7 @@ export function ChatBox({
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.borderColor = 'var(--brand-primary)';
-                e.currentTarget.style.color = '#38bdf8';
+                e.currentTarget.style.color = 'var(--info-text)';
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.borderColor = 'var(--app-border)';
@@ -747,6 +1034,7 @@ export function ChatBox({
             {/* Right side: Send or Stop button */}
             {isStreaming ? (
               <button
+                type="button"
                 onClick={handleStopGeneration}
                 style={{
                   width: '32px',
@@ -754,35 +1042,38 @@ export function ChatBox({
                   borderRadius: '50%',
                   background: 'rgba(244, 63, 94, 0.2)',
                   border: '1px solid rgba(244, 63, 94, 0.4)',
-                  color: '#fb7185',
+                  color: 'var(--danger-text)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                   cursor: 'pointer',
                 }}
                 title="Stop generating"
+                aria-label="Stop generating"
               >
                 <StopCircle size={16} />
               </button>
             ) : (
               <button
+                type="button"
                 onClick={() => handleSend()}
-                disabled={!inputQuery.trim()}
+                disabled={!canSend}
                 style={{
                   width: '32px',
                   height: '32px',
                   borderRadius: '50%',
-                  background: inputQuery.trim() ? 'var(--brand-gradient)' : 'rgba(255, 255, 255, 0.08)',
+                  background: canSend ? 'var(--brand-gradient)' : 'rgba(255, 255, 255, 0.08)',
                   border: 'none',
-                  color: inputQuery.trim() ? '#ffffff' : 'var(--app-text-muted)',
+                  color: canSend ? '#ffffff' : 'var(--app-text-muted)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  cursor: inputQuery.trim() ? 'pointer' : 'default',
+                  cursor: canSend ? 'pointer' : 'default',
                   transition: 'all 0.15s ease',
-                  boxShadow: inputQuery.trim() ? '0 2px 10px var(--brand-glow)' : 'none',
+                  boxShadow: canSend ? '0 2px 10px var(--brand-glow)' : 'none',
                 }}
                 title="Send query"
+                aria-label="Send question"
               >
                 <ArrowUp size={18} strokeWidth={2.5} />
               </button>
@@ -797,6 +1088,7 @@ export function ChatBox({
             color: 'var(--app-text-muted)',
             marginTop: '0.5rem',
             letterSpacing: '0.01em',
+            textAlign: 'center',
           }}
         >
           Answers come only from your indexed files and can still contain mistakes. Check the linked sources.

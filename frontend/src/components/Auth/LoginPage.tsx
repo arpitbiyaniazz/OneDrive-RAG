@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   FolderSync,
   ShieldCheck,
-  Layers,
+  RefreshCw,
   ArrowRight,
   ExternalLink,
   Zap,
@@ -34,6 +34,11 @@ export function LoginPage({
   const [loading, setLoading] = useState<'microsoft' | 'google' | 'sandbox' | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(initialError);
 
+  // e.g. "session expired" arriving while this page is already shown
+  useEffect(() => {
+    setErrorMessage(initialError);
+  }, [initialError]);
+
   async function handleOAuth(provider: 'microsoft' | 'google') {
     try {
       setLoading(provider);
@@ -60,16 +65,18 @@ export function LoginPage({
   }
 
   return (
+    // Scrolls on small screens. Vertical centring uses auto margins on the content (not
+    // justify-content), so content taller than the screen is never cut off at the top.
     <div
       style={{
-        minHeight: '100vh',
+        height: '100%',
+        width: '100%',
+        overflowY: 'auto',
         display: 'flex',
         flexDirection: 'column',
-        justifyContent: 'center',
         alignItems: 'center',
-        padding: '2rem 1.5rem',
+        padding: '4rem 1.25rem 2rem',
         position: 'relative',
-        overflow: 'hidden',
         background: 'var(--login-bg, radial-gradient(ellipse at 50% 10%, #172554 0%, #0a0d14 65%))',
       }}
     >
@@ -109,41 +116,42 @@ export function LoginPage({
           </button>
         </div>
       )}
-      {/* Decorative ambient background glows */}
-      <div
-        style={{
-          position: 'absolute',
-          top: '-10%',
-          left: '20%',
-          width: '500px',
-          height: '500px',
-          borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(0, 120, 212, 0.15) 0%, transparent 70%)',
-          pointerEvents: 'none',
-          filter: 'blur(60px)',
-        }}
-      />
-      <div
-        style={{
-          position: 'absolute',
-          bottom: '-10%',
-          right: '15%',
-          width: '600px',
-          height: '600px',
-          borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(139, 92, 246, 0.12) 0%, transparent 70%)',
-          pointerEvents: 'none',
-          filter: 'blur(70px)',
-        }}
-      />
+      {/* Decorative ambient background glows (clipped so they never add scrollbars) */}
+      <div aria-hidden="true" style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
+        <div
+          style={{
+            position: 'absolute',
+            top: '-10%',
+            left: '20%',
+            width: '500px',
+            height: '500px',
+            borderRadius: '50%',
+            background: 'radial-gradient(circle, rgba(0, 120, 212, 0.15) 0%, transparent 70%)',
+            filter: 'blur(60px)',
+          }}
+        />
+        <div
+          style={{
+            position: 'absolute',
+            bottom: '-10%',
+            right: '15%',
+            width: '600px',
+            height: '600px',
+            borderRadius: '50%',
+            background: 'radial-gradient(circle, rgba(139, 92, 246, 0.12) 0%, transparent 70%)',
+            filter: 'blur(70px)',
+          }}
+        />
+      </div>
 
       <div
         style={{
+          marginTop: 'auto',
           width: '100%',
           maxWidth: '1080px',
           zIndex: 1,
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(min(320px, 100%), 1fr))',
           gap: '2.5rem',
           alignItems: 'center',
         }}
@@ -171,7 +179,7 @@ export function LoginPage({
                 fontWeight: 700,
                 letterSpacing: '0.08em',
                 textTransform: 'uppercase',
-                color: '#60a5fa',
+                color: 'var(--info-text)',
               }}
             >
               Enterprise Document Intelligence
@@ -203,7 +211,7 @@ export function LoginPage({
               maxWidth: '480px',
             }}
           >
-            Ground your enterprise LLM in company OneDrive files (PDF, DOCX, XLSX, PPTX) with pgvector, delta-sync, and dual-branch telemetry.
+            Ask questions about your OneDrive and Google Drive files. Answers come only from the documents you choose to index, with inline citations that link back to the source.
           </p>
 
           {/* Value Highlights */}
@@ -225,11 +233,11 @@ export function LoginPage({
                 <ShieldCheck size={18} color="#38bdf8" />
               </div>
               <div>
-                <h4 style={{ fontSize: '0.925rem', fontWeight: 600, color: '#f1f5f9' }}>
-                  Azure AD Multi-Tenant Isolation
+                <h4 style={{ fontSize: '0.925rem', fontWeight: 600, color: 'var(--app-text)' }}>
+                  Private to Your Account
                 </h4>
                 <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  Per-user encrypted tokens with strict SQL metadata row filtering and Microsoft Graph delta sync.
+                  Every search is limited to the documents you indexed, and your drive access tokens are stored encrypted.
                 </p>
               </div>
             </div>
@@ -248,14 +256,14 @@ export function LoginPage({
                   flexShrink: 0,
                 }}
               >
-                <Layers size={18} color="#c084fc" />
+                <FileSpreadsheet size={18} color="#c084fc" />
               </div>
               <div>
-                <h4 style={{ fontSize: '0.925rem', fontWeight: 600, color: '#f1f5f9' }}>
-                  Dual-Branch Observability
+                <h4 style={{ fontSize: '0.925rem', fontWeight: 600, color: 'var(--app-text)' }}>
+                  Structure-Aware Extraction
                 </h4>
                 <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  OpenTelemetry distributed system spans seamlessly cross-correlated with Langfuse LLM/RAG evals.
+                  Keeps Word headings and tables, Excel sheets, PowerPoint slides and PDF page numbers, so each citation points to the right place.
                 </p>
               </div>
             </div>
@@ -274,14 +282,14 @@ export function LoginPage({
                   flexShrink: 0,
                 }}
               >
-                <FileSpreadsheet size={18} color="#34d399" />
+                <RefreshCw size={18} color="#34d399" />
               </div>
               <div>
-                <h4 style={{ fontSize: '0.925rem', fontWeight: 600, color: '#f1f5f9' }}>
-                  Multi-Format Structured Extraction
+                <h4 style={{ fontSize: '0.925rem', fontWeight: 600, color: 'var(--app-text)' }}>
+                  Folders Stay in Sync
                 </h4>
                 <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  Preserves complex Excel tables, PowerPoint slide decks, Word headings, and PDF page numbers.
+                  Each time you sync, changed files are re-indexed, deleted files are removed and new files in your selected folders are added.
                 </p>
               </div>
             </div>
@@ -292,7 +300,7 @@ export function LoginPage({
         <div
           className="glass-panel"
           style={{
-            padding: '2.5rem',
+            padding: 'clamp(1.5rem, 6vw, 2.5rem)',
             maxWidth: '460px',
             margin: '0 auto',
             width: '100%',
@@ -301,16 +309,17 @@ export function LoginPage({
           }}
         >
           <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-            <h2 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: '0.4rem', color: '#ffffff' }}>
+            <h2 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: '0.4rem', color: 'var(--app-text)' }}>
               Sign In to Your Workspace
             </h2>
             <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-              Select your authentication method to access indexed OneDrive repositories.
+              Sign in with Microsoft or Google. You can connect the other drive later.
             </p>
           </div>
 
           {errorMessage && (
             <div
+              role="alert"
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -319,13 +328,13 @@ export function LoginPage({
                 borderRadius: 'var(--radius-md)',
                 background: 'rgba(244, 63, 94, 0.15)',
                 border: '1px solid rgba(244, 63, 94, 0.3)',
-                color: '#fb7185',
+                color: 'var(--danger-text)',
                 fontSize: '0.825rem',
                 marginBottom: '1.5rem',
               }}
             >
-              <AlertCircle size={16} />
-              <span>{errorMessage}</span>
+              <AlertCircle size={16} style={{ flexShrink: 0 }} />
+              <span style={{ overflowWrap: 'anywhere' }}>{errorMessage}</span>
             </div>
           )}
 
@@ -493,7 +502,7 @@ export function LoginPage({
             <span style={{ color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
               <Cpu size={13} /> Service status:
             </span>
-            <span style={{ color: health ? '#34d399' : '#f87171', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+            <span style={{ color: health ? 'var(--success-text)' : 'var(--danger-text)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
               {health ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
               {health ? 'Online' : 'Unavailable'}
             </span>
@@ -505,6 +514,7 @@ export function LoginPage({
       <footer
         style={{
           marginTop: '3rem',
+          marginBottom: 'auto',
           fontSize: '0.75rem',
           color: 'var(--text-muted)',
           textAlign: 'center',

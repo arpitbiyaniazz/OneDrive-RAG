@@ -30,6 +30,24 @@ export interface OneDriveItem {
 
 export type DocumentStatus = 'PENDING' | 'INDEXED' | 'FAILED' | 'UNSUPPORTED' | 'DELETED';
 
+export interface KnowledgeBaseStats {
+  /** Number of INDEXED documents. */
+  total_documents: number;
+  by_status: Partial<Record<DocumentStatus, number>>;
+  total_chunks: number;
+  last_sync: string | null;
+}
+
+/** A folder selected for indexing: new files that appear in it are indexed on every sync. */
+export interface TrackedFolder {
+  id: string;
+  drive_type: DriveType;
+  name: string;
+  path: string;
+  created_at: string | null;
+  last_synced_at: string | null;
+}
+
 export interface DocumentRecord {
   id: string;
   filename: string;
@@ -59,6 +77,8 @@ export interface Citation {
 
 export interface ChatMessage {
   id: string;
+  /** Stable render key for messages created in this tab (their id changes to the server id). */
+  clientId?: string;
   role: 'user' | 'assistant';
   content: string;
   citations?: Citation[];
@@ -74,10 +94,12 @@ export interface IngestionFileResult {
   reason?: string;
 }
 
+export type JobStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'COMPLETED_WITH_ERRORS' | 'FAILED';
+
 export interface IngestionJob {
   job_id: string;
   job_type: 'ingest' | 'sync';
-  status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'COMPLETED_WITH_ERRORS' | 'FAILED';
+  status: JobStatus;
   total_files: number;
   processed_files: number;
   failed_files: number;
@@ -85,4 +107,6 @@ export interface IngestionJob {
   progress_percent: number;
   result?: { files?: IngestionFileResult[]; summary?: Record<string, number> } | null;
   error_message?: string | null;
+  created_at?: string | null;
+  finished_at?: string | null;
 }

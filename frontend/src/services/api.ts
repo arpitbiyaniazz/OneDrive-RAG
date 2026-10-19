@@ -1,8 +1,22 @@
-import { DocumentRecord, DriveType, HealthStatus, IngestionJob, OneDriveItem, UserProfile } from '../types';
+import {
+  Citation,
+  DocumentRecord,
+  DriveType,
+  HealthStatus,
+  IngestionJob,
+  JobStatus,
+  KnowledgeBaseStats,
+  OneDriveItem,
+  TrackedFolder,
+  UserProfile,
+} from '../types';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) || '/api';
 const TOKEN_KEY = 'onedrive_rag_token';
 const OAUTH_STATE_KEY = 'onedrive_rag_oauth_state';
+
+/** localStorage key of the session token; the app watches it to follow sign-in/out in other tabs. */
+export const TOKEN_STORAGE_KEY = TOKEN_KEY;
 
 export type OAuthProvider = 'microsoft' | 'google';
 
@@ -23,30 +37,51 @@ function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
 
+export const hasSessionToken = (): boolean => Boolean(getToken());
+
 function getAuthHeaders(extra: Record<string, string> = {}): Record<string, string> {
   const token = getToken();
   return token ? { ...extra, Authorization: `Bearer ${token}` } : { ...extra };
 }
 
+function fallbackMessage(status: number): string {
+  if (status === 429) return 'Too many requests. Please wait a moment and try again.';
+  return `Request failed (${status})`;
+}
+
+/** Builds an ApiError from an error response; a backend `detail` message is surfaced as-is. */
 async function errorFrom(res: Response): Promise<ApiError> {
   const body = await res.json().catch(() => ({}));
   const detail = body?.detail;
   if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
-    return new ApiError(detail.message || 'Request failed', res.status, detail.code);
+    return new ApiError(detail.message || fallbackMessage(res.status), res.status, detail.code);
   }
   if (Array.isArray(detail)) {
     return new ApiError(detail.map((d: { msg?: string }) => d.msg).join('; ') || 'Invalid request', res.status);
   }
-  return new ApiError(typeof detail === 'string' ? detail : `Request failed (${res.status})`, res.status);
+  return new ApiError(typeof detail === 'string' && detail ? detail : fallbackMessage(res.status), res.status);
 }
 
-/** fetch() against the API with the session token; a 401 signs the user out. */
+/**
+ * True when a response says the app session itself is invalid. The auth dependency marks those 401s
+ * with `WWW-Authenticate: Bearer` (a cross-origin deployment may not expose that header, so any 401
+ * that is not a drive problem counts too). A missing drive connection is a 403 and never signs out.
+ */
+async function isSessionRejected(res: Response): Promise<boolean> {
+  if (res.status !== 401) return false;
+  if (res.headers.has('WWW-Authenticate')) return true;
+  const body = await res.clone().json().catch(() => null);
+  return body?.detail?.code !== 'drive_not_connected';
+}
+
+/** fetch() against the API with the session token; a rejected session signs the user out. */
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: getAuthHeaders((init.headers as Record<string, string>) || {}),
   });
-  if (res.status === 401 && getToken() && !path.startsWith('/auth/')) {
+  // /auth/* callers handle their own 401s. Fire even when the token is already gone (signed out in another tab).
+  if (!path.startsWith('/auth/') && (await isSessionRejected(res))) {
     localStorage.removeItem(TOKEN_KEY);
     window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
   }
@@ -59,11 +94,18 @@ async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   return res.json();
 }
 
+async function apiDelete(path: string): Promise<void> {
+  const res = await apiFetch(path, { method: 'DELETE' });
+  if (!res.ok) throw await errorFrom(res);
+}
+
 const jsonBody = (body: unknown): RequestInit => ({
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),
 });
+
+export const isJobRunning = (status?: JobStatus | null) => status === 'PENDING' || status === 'PROCESSING';
 
 export const fetchHealth = () => apiJson<HealthStatus>('/health');
 
@@ -77,27 +119,52 @@ export async function fetchCurrentUser(): Promise<UserProfile | null> {
   return res.json();
 }
 
+interface PendingOAuth {
+  provider: OAuthProvider;
+  state: string;
+  code_verifier: string;
+}
+
+function takePendingOAuth(): PendingOAuth | null {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(OAUTH_STATE_KEY) || 'null');
+    return saved && typeof saved === 'object' ? saved : null;
+  } catch {
+    return null;
+  } finally {
+    sessionStorage.removeItem(OAUTH_STATE_KEY);
+  }
+}
+
+/** Forgets an unfinished sign-in (used when the provider redirects back with an error). */
+export function discardOAuthAttempt(): void {
+  sessionStorage.removeItem(OAUTH_STATE_KEY);
+}
+
 /**
- * Starts an OAuth redirect. The server-issued state is remembered for this tab so the callback
- * can reject responses to sign-ins this browser never started (login CSRF).
+ * Starts an OAuth redirect. The server-issued state and PKCE verifier are remembered for this tab
+ * only: the callback rejects responses to sign-ins this browser never started (login CSRF), and an
+ * intercepted redirect URL (code + state) is not enough to sign in without the verifier.
  * When already signed in, the provider account is linked to the current user.
  */
 export async function startOAuth(provider: OAuthProvider): Promise<void> {
   const path = provider === 'google' ? '/auth/google/login' : '/auth/login';
-  const data = await apiJson<{ auth_url: string; state: string }>(path);
-  sessionStorage.setItem(OAUTH_STATE_KEY, JSON.stringify({ provider, state: data.state }));
+  const data = await apiJson<{ auth_url: string; state: string; code_verifier: string }>(path);
+  const pending: PendingOAuth = { provider, state: data.state, code_verifier: data.code_verifier };
+  sessionStorage.setItem(OAUTH_STATE_KEY, JSON.stringify(pending));
   window.location.href = data.auth_url;
 }
 
 export async function completeOAuth(provider: OAuthProvider, code: string, state: string | null): Promise<UserProfile> {
-  const saved = JSON.parse(sessionStorage.getItem(OAUTH_STATE_KEY) || 'null');
-  sessionStorage.removeItem(OAUTH_STATE_KEY);
-  if (!saved || saved.provider !== provider || !state || saved.state !== state) {
+  const saved = takePendingOAuth();
+  if (!saved || saved.provider !== provider || !state || saved.state !== state || !saved.code_verifier) {
     throw new ApiError('This sign-in link was not started from this browser. Please sign in again.', 400);
   }
   const path = provider === 'google' ? '/auth/google/callback' : '/auth/callback';
-  const params = new URLSearchParams({ code, state });
-  const data = await apiJson<{ token: string; user: UserProfile }>(`${path}?${params.toString()}`);
+  const data = await apiJson<{ token: string; user: UserProfile }>(
+    path,
+    jsonBody({ code, state, code_verifier: saved.code_verifier })
+  );
   localStorage.setItem(TOKEN_KEY, data.token);
   return data.user;
 }
@@ -128,11 +195,14 @@ export interface IngestSelection {
   name?: string;
 }
 
+/** Queues indexing; selected folders also become tracked folders. 429 when 3 jobs are already queued. */
 export const startIngestion = (items: IngestSelection[]) => apiJson<IngestionJob>('/ingestion/start', jsonBody({ items }));
 
 export const fetchJob = (jobId: string) => apiJson<IngestionJob>(`/ingestion/${encodeURIComponent(jobId)}`);
 
 export const startSync = () => apiJson<IngestionJob>('/sync/start', { method: 'POST' });
+
+export const fetchSyncStatus = () => apiJson<{ last_sync: IngestionJob | null }>('/sync/status');
 
 export async function fetchDocuments(filters: { file_type?: string; drive_type?: string } = {}) {
   const params = new URLSearchParams();
@@ -142,34 +212,42 @@ export async function fetchDocuments(filters: { file_type?: string; drive_type?:
   return apiJson<{ total: number; documents: DocumentRecord[] }>(`/documents${query}`);
 }
 
-export const fetchKnowledgeBaseStats = () =>
-  apiJson<{ total_documents: number; total_chunks: number; last_sync: string | null; by_status: Record<string, number> }>(
-    '/documents/stats'
-  );
+export const fetchKnowledgeBaseStats = () => apiJson<KnowledgeBaseStats>('/documents/stats');
 
-export async function deleteDocument(documentId: string): Promise<void> {
-  const res = await apiFetch(`/documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' });
-  if (!res.ok) throw await errorFrom(res);
+/** Removes a document from the knowledge base; it stays out of syncs until selected for indexing again. */
+export const deleteDocument = (documentId: string) => apiDelete(`/documents/${encodeURIComponent(documentId)}`);
+
+export async function fetchTrackedFolders(): Promise<TrackedFolder[]> {
+  return (await apiJson<{ folders: TrackedFolder[] }>('/tracked-folders')).folders;
 }
+
+/** Stops indexing new files from a folder; documents already indexed from it stay. */
+export const untrackFolder = (folderId: string) => apiDelete(`/tracked-folders/${encodeURIComponent(folderId)}`);
 
 export interface ChatSessionResponseItem {
   id: string;
   title: string;
-  created_at?: string;
-  updated_at?: string;
+  created_at?: string | null;
+  updated_at?: string | null;
 }
 
 export async function fetchChatSessions(): Promise<ChatSessionResponseItem[]> {
   return (await apiJson<{ sessions: ChatSessionResponseItem[] }>('/chat/sessions')).sessions;
 }
 
-export async function deleteChatSession(sessionId: string): Promise<void> {
-  const res = await apiFetch(`/chat/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
-  if (!res.ok) throw await errorFrom(res);
+export const deleteChatSession = (sessionId: string) => apiDelete(`/chat/sessions/${encodeURIComponent(sessionId)}`);
+
+export interface SessionMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  citations: Citation[];
+  feedback: number | null;
+  created_at: string | null;
 }
 
 export const fetchSessionMessages = (sessionId: string) =>
-  apiJson<{ messages: Array<{ id: string; role: 'user' | 'assistant'; content: string; citations: []; feedback: number | null; created_at: string }> }>(
+  apiJson<{ session_id: string; title: string; messages: SessionMessage[] }>(
     `/chat/sessions/${encodeURIComponent(sessionId)}/messages`
   );
 

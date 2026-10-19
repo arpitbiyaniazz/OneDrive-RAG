@@ -111,7 +111,8 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
-    expose_headers=["X-Chat-Session-Id", "X-Request-Id"],
+    # WWW-Authenticate lets a cross-origin SPA tell an expired session (401) from other errors.
+    expose_headers=["X-Chat-Session-Id", "X-Request-Id", "WWW-Authenticate"],
 )
 
 
