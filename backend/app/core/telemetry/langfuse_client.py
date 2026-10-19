@@ -67,12 +67,14 @@ def rag_trace(name: str, **kwargs: Any) -> Iterator[_Trace]:
             logger.debug("Langfuse trace close failed", exc_info=True)
 
 
-def log_score(trace_id: Optional[str], name: str, value: float, comment: Optional[str] = None) -> bool:
+def log_score(trace_id: Optional[str], name: str, value: float, comment: Optional[str] = None,
+              score_id: Optional[str] = None) -> bool:
+    """Records a score; the same `score_id` updates the earlier score instead of adding one."""
     client = get_langfuse()
     if client is None or not trace_id:
         return False
     try:
-        client.create_score(trace_id=trace_id, name=name, value=value, comment=comment)
+        client.create_score(trace_id=trace_id, name=name, value=value, comment=comment, score_id=score_id)
         return True
     except Exception:
         logger.warning("Failed to record Langfuse score", exc_info=True)

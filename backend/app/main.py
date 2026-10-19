@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -20,6 +21,7 @@ from app.core.telemetry.langfuse_client import shutdown_langfuse
 from app.core.telemetry.otel_setup import init_opentelemetry
 from app.db.database import engine
 from app.services.connectors.base import close_http_client
+from app.services.diagnostics import log_provider_problems
 from app.services.jobs import worker
 
 request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
@@ -79,11 +81,15 @@ async def _check_schema() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting %s v%s (%s)", settings.PROJECT_NAME, settings.VERSION, settings.ENVIRONMENT)
+    provider_check = None
     if settings.ENVIRONMENT != "test":
         await _check_schema()
+        provider_check = asyncio.create_task(log_provider_problems(), name="provider-check")
         if settings.RUN_WORKER:
             worker.start()
     yield
+    if provider_check is not None and not provider_check.done():
+        provider_check.cancel()
     await worker.stop()
     await close_http_client()
     shutdown_langfuse()

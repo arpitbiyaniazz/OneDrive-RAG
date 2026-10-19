@@ -2,16 +2,42 @@ import contextlib
 import functools
 import logging
 from typing import Any, Callable, Dict, Iterator, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import SpanProcessor, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 from opentelemetry.trace import Status, StatusCode
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# Hosts whose URL paths are safe to keep in traces; for any other host (for example OneDrive's
+# pre-authenticated download redirects, which carry a bearer token in the URL) only the host is kept.
+_API_HOSTS = ("graph.microsoft.com", "www.googleapis.com", "oauth2.googleapis.com", "login.microsoftonline.com",
+              "openidconnect.googleapis.com", "api.mistral.ai", "api.openai.com")
+_URL_ATTRIBUTES = ("url.full", "http.url")
+
+
+def redact_url(url: str) -> str:
+    parts = urlsplit(url)
+    if parts.hostname in _API_HOSTS:
+        return urlunsplit((parts.scheme, parts.netloc.rsplit("@", 1)[-1], parts.path, "", ""))
+    return urlunsplit((parts.scheme, (parts.hostname or ""), "/", "", ""))
+
+
+class _RedactingProcessor(SpanProcessor):
+    """Rewrites URL attributes as spans start, before any exporter can see them."""
+
+    def on_start(self, span, parent_context=None) -> None:
+        attributes = getattr(span, "attributes", None) or {}
+        for key in _URL_ATTRIBUTES:
+            value = attributes.get(key)
+            if isinstance(value, str):
+                span.set_attribute(key, redact_url(value))
 
 
 def init_opentelemetry(app=None, engine=None) -> Optional[TracerProvider]:
@@ -28,6 +54,7 @@ def init_opentelemetry(app=None, engine=None) -> Optional[TracerProvider]:
             "service.version": settings.VERSION,
             "deployment.environment": settings.ENVIRONMENT,
         }))
+        provider.add_span_processor(_RedactingProcessor())  # must run before the exporting processors
         if settings.OTEL_EXPORTER_OTLP_ENDPOINT:
             from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 

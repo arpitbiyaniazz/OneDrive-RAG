@@ -1,11 +1,14 @@
 """Operational commands.
 
+    python -m app.cli doctor               # check the database, API keys and sign-in configuration
     python -m app.cli reset-embeddings     # after changing EMBEDDING_MODEL / EMBEDDING_DIMENSION
     python -m app.cli sync --email USER    # queue a full re-check/re-index for one user (or --all)
     python -m app.cli run-jobs             # process queued jobs in the foreground, then exit
+    python -m app.cli worker               # run the job worker until stopped (API pods: RUN_WORKER=false)
 """
 import argparse
 import asyncio
+import sys
 
 from sqlalchemy import select, text
 
@@ -46,21 +49,54 @@ async def run_jobs() -> None:
     print(f"Processed {count} job(s).")
 
 
+async def run_worker() -> None:
+    import signal
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+    jobs.worker.start()
+    print("Worker started; press Ctrl+C to stop.")
+    await stop.wait()
+    await jobs.worker.stop()  # an interrupted job is handed back to the queue
+    await engine.dispose()
+
+
+async def doctor() -> int:
+    from app.services.diagnostics import run_all
+
+    checks = await run_all()
+    await engine.dispose()
+    for check in checks:
+        mark = "ok  " if check.ok else ("FAIL" if check.required else "warn")
+        print(f"[{mark}] {check.name}: {check.detail}")
+    failed = [c for c in checks if c.required and not c.ok]
+    print("\nAll required checks passed." if not failed else f"\n{len(failed)} required check(s) failed.")
+    return 1 if failed else 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m app.cli")
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("doctor")
     sub.add_parser("reset-embeddings")
     sync = sub.add_parser("sync")
     sync.add_argument("--email")
     sync.add_argument("--all", action="store_true")
     sub.add_parser("run-jobs")
+    sub.add_parser("worker")
     args = parser.parse_args()
+    if args.command == "doctor":
+        sys.exit(asyncio.run(doctor()))
     if args.command == "reset-embeddings":
         asyncio.run(reset_embeddings())
     elif args.command == "sync":
         if not args.email and not args.all:
             parser.error("sync needs --email or --all")
         asyncio.run(queue_sync(args.email, args.all))
+    elif args.command == "worker":
+        asyncio.run(run_worker())
     else:
         asyncio.run(run_jobs())
 
