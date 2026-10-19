@@ -87,6 +87,18 @@ async def test_live_every_document_answers_with_valid_citations():
     behaviour.append(("lists documents from the catalog", "Runbook.md" in answer and "Strategy 2027" in answer, answer))
     prepared, answer = await _ask(user.id, "Summarize the Employee Handbook")
     behaviour.append(("summary of a named document", prepared.plan.intent == "summarize_document" and "18 weeks" in answer, answer))
+    prepared, answer = await _ask(user.id, "Give me a summary of the handbook")
+    behaviour.append(("loosely named document is summarized", prepared.plan.intent == "summarize_document"
+                      and "18 weeks" in answer, answer))
+    prepared, answer = await _ask(user.id, "What spreadsheets do I have?")
+    behaviour.append(("inventory by file type", "Budget FY2026" in answer and "Runbook" not in answer, answer))
+    prepared, answer = await _ask(user.id, "Compare the Runbook and Strategy 2027: what does each one cover?")
+    behaviour.append(("comparison uses both documents", {"Runbook.md", "Strategy 2027.pptx"}
+                      <= {c.filename for c in prepared.chunks}, answer))
+    prepared, answer = await _ask(user.id, "Has the Strategy 2027 pilot launch already happened, or is it still ahead?")
+    ahead = datetime.now(UTC).date() < datetime(2027, 3, 14, tzinfo=UTC).date()
+    expected = r"\b(ahead|future|upcoming|not yet|will take place|has not)\b" if ahead else r"\b(already|took place|happened|past)\b"
+    behaviour.append(("uses today's date (launch is 14 March 2027)", bool(re.search(expected, answer, re.I)), answer))
 
     print("\n=== Live RAG report ===")
     passed = sum(1 for r in rows if all(r[2:]))
