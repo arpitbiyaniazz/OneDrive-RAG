@@ -12,22 +12,28 @@ question ──► rewrite follow-ups ──► hybrid search (vector + full tex
 
 ## What it does
 
-- **Every common document type**: PDF (text, tables, page numbers, section titles from bookmarks),
-  Word (headings, lists, tables in reading order, headers/footers), Excel and CSV (header row repeated in
-  every chunk, real row numbers), PowerPoint (slides, tables, grouped shapes, speaker notes), Google
-  Docs/Sheets/Slides, Markdown, HTML and plain text in any common encoding. Files that cannot be indexed
-  (scanned PDFs without text, legacy `.doc/.xls/.ppt`, images, archives, empty files) are listed with the
-  reason instead of being indexed as garbage.
+- **Every common document type**: PDF (multi-column pages, tables with their header in every part,
+  page numbers, bookmarks), Word (content controls, tracked changes, text boxes, footnotes, list numbers,
+  every header and footer), Excel and CSV (tables found per sheet with real headers, merged cells, number
+  formats, a per-table profile for totals and counts), PowerPoint (slides, tables, charts, SmartArt, alt
+  text, speaker notes), Google Docs/Sheets/Slides, macro-enabled and template Office files, Markdown, HTML
+  and plain text in any common encoding. With `OCR_PROVIDER=mistral`, scanned PDFs, scanned pages and
+  images are read too. Files that cannot be indexed (legacy `.doc/.xls/.ppt`, archives, empty files, and
+  scans while OCR is off) are listed with the reason instead of being indexed as garbage.
 - **Retrieval that finds every document**: semantic vectors (HNSW index) fused with Postgres full-text
   search, so exact names, codes and numbers match too. Questions that name a document focus on it,
-  "summarize X" reads the whole document, and "which documents do I have?" answers from the catalog.
+  "summarize X" reads the whole document (long ones part by part), comparisons draw from every named
+  document, and "which documents do I have?" answers from the catalog.
 - **Grounded answers**: the system prompt (`backend/app/prompts.py`) requires citations, says plainly when
   the documents do not contain the answer, flags conflicting sources, and treats document text as data
   (prompt-injection resistant). Follow-up questions are rewritten using the conversation.
-- **Production basics**: OAuth with PKCE and state validation, revocable sessions, per-user isolation on
-  every query, durable background jobs in Postgres (safe across restarts and replicas), incremental sync
-  that re-indexes changed files and purges deleted ones, Alembic migrations, health/readiness probes,
-  request ids, OpenTelemetry tracing and Langfuse LLM tracing (both optional).
+- **Sync**: folders you index are tracked; **Sync** re-indexes changed files, purges deleted ones and adds
+  files that appeared in tracked folders. Removing a document keeps it out until you select it again.
+- **Production basics**: OAuth with PKCE (verifier kept in the browser) and state validation, accounts
+  linked by email only when both providers verified it, revocable sessions, per-user isolation on every
+  query, per-user chat rate limits, durable background jobs in Postgres (heartbeats, fencing, safe across
+  restarts and replicas), Alembic migrations, health/readiness probes, `doctor` checks, request ids,
+  OpenTelemetry tracing (download links redacted) and Langfuse LLM tracing (both optional).
 
 ## Run locally
 
@@ -80,9 +86,11 @@ live run, answered with valid citations.
 
 | Task | Command |
 | --- | --- |
+| Check configuration, database and API keys | `python -m app.cli doctor` |
 | Re-check all documents of a user | `python -m app.cli sync --email user@example.com` (or the **Sync** button) |
 | Change the embedding model | set `EMBEDDING_MODEL`/`EMBEDDING_DIMENSION`, run `python -m app.cli reset-embeddings`, then `python -m app.cli sync --all` |
-| Process queued jobs without the API | `python -m app.cli run-jobs` |
+| Process queued jobs without the API | `python -m app.cli run-jobs` (once) or `python -m app.cli worker` (until stopped) |
+| Turn on OCR for scans and images | set `OCR_PROVIDER=mistral`, then run a sync |
 | Liveness / readiness | `GET /api/health`, `GET /api/health/ready` |
 
 The original requirements are kept in [docs/ORIGINAL_SPEC.md](docs/ORIGINAL_SPEC.md); observability options

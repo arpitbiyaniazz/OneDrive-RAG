@@ -58,7 +58,7 @@ class JobLostError(Exception):
     """Another worker re-claimed this job (it looked abandoned); this run must stop writing."""
 
 
-async def enqueue(user_id: str, job_type: str, payload: dict, total_files: int = 0) -> IngestionJob:
+async def enqueue(user_id: str, job_type: str, payload: dict, total_files: int = 0, _retry: bool = True) -> IngestionJob:
     async with AsyncSessionLocal() as session:
         active = select(IngestionJob).where(
             IngestionJob.user_id == user_id, IngestionJob.status.in_([PENDING, PROCESSING])
@@ -81,7 +81,12 @@ async def enqueue(user_id: str, job_type: str, payload: dict, total_files: int =
             await session.rollback()
             if job_type != SYNC:
                 raise
-            return (await session.execute(active.where(IngestionJob.job_type == SYNC))).scalars().one()
+            running = (await session.execute(active.where(IngestionJob.job_type == SYNC))).scalars().first()
+            if running is None and _retry:  # that sync finished in between
+                return await enqueue(user_id, job_type, payload, total_files, _retry=False)
+            if running is None:
+                raise
+            return running
         return job
 
 
@@ -219,7 +224,16 @@ async def _process_files(user_id: str, connector: Connector, tokens: _Tokens, it
                     progress.add(item.name, "FAILED", reason="Unexpected error")
             await progress.save()
 
-    await asyncio.gather(*(one(item) for item in items))
+    # A task group cancels the remaining files when this run loses the job (JobLostError).
+    try:
+        async with asyncio.TaskGroup() as group:
+            for item in items:
+                group.create_task(one(item))
+    except BaseExceptionGroup as errors:
+        lost = [e for e in errors.exceptions if isinstance(e, JobLostError)]
+        if lost:
+            raise lost[0] from None
+        raise
 
 
 async def track_folder(user_id: str, folder: DriveItem) -> None:

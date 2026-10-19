@@ -215,3 +215,38 @@ async def test_an_interrupted_job_is_handed_back(client, auth_headers, monkeypat
         pass
     async with AsyncSessionLocal() as s:
         assert (await s.get(IngestionJob, res.json()["job_id"])).status == "PENDING"
+
+
+async def test_a_reclaimed_job_ignores_writes_from_the_stale_run(client, auth_headers):
+    import pytest
+    from sqlalchemy import update
+
+    from app.models.ingestion_job import IngestionJob
+    from app.services import jobs
+
+    await client.post("/api/ingestion/start", headers=auth_headers,
+                      json={"items": [{"id": "file_hr_leave", "drive_type": "onedrive"}]})
+    job = await jobs.claim_next()
+    stale = jobs._Progress(job)
+    async with AsyncSessionLocal() as s:  # another worker took the job over
+        await s.execute(update(IngestionJob).where(IngestionJob.id == job.id).values(attempts=job.attempts + 1))
+        await s.commit()
+    with pytest.raises(jobs.JobLostError):
+        await stale.save(status="COMPLETED")
+    async with AsyncSessionLocal() as s:
+        assert (await s.get(IngestionJob, job.id)).status == "PROCESSING"
+
+
+async def test_jobs_of_one_user_never_run_at_the_same_time(client, auth_headers):
+    from app.services import jobs
+    from tests.conftest import make_user
+
+    item = {"items": [{"id": "file_hr_leave", "drive_type": "onedrive"}]}
+    for _ in range(2):
+        await client.post("/api/ingestion/start", headers=auth_headers, json=item)
+    other, _ = await make_user("other@example.com")
+    await jobs.enqueue(other.id, jobs.SYNC, {})
+    first = await jobs.claim_next()
+    second = await jobs.claim_next()
+    assert first and second and first.user_id != second.user_id  # the user's second job waits
+    assert await jobs.claim_next() is None
