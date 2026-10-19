@@ -86,3 +86,54 @@ def test_small_paragraphs_are_merged_within_a_section():
     chunks = chunk_document(parsed, "doc.txt")
     assert len(chunks) < 5
     assert all(len(c.content) >= 200 for c in chunks)
+
+
+def test_file_type_detection_explains_what_cannot_be_indexed():
+    import io
+    import zipfile
+
+    ole = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 512
+    with pytest.raises(UnsupportedDocumentError, match="Password-protected"):
+        parse_document(ole + "EncryptedPackage".encode("utf-16-le") + b"\0" * 64, "locked.docx")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("xl/workbook.bin", b"\0")
+    with pytest.raises(UnsupportedDocumentError, match="xlsb"):
+        parse_document(buf.getvalue(), "Book.xlsb")
+    with pytest.raises(UnsupportedDocumentError) as exc:
+        parse_document(b"\xff\xd8\xff\xe0" + b"\0" * 64, "photo.jpg")
+    assert exc.value.needs_ocr and exc.value.file_type == "jpeg"
+    with pytest.raises(UnsupportedDocumentError, match="Audio"):
+        parse_document(b"RIFF\x24\0\0\0WAVEfmt " + b"\0" * 64, "voice.wav")
+
+
+def test_scanned_pages_inside_a_text_pdf_are_flagged_for_ocr():
+    import pymupdf
+
+    from tests.fixtures.corpus import _pdf_scanned
+
+    doc = pymupdf.open()
+    doc.new_page().insert_textbox(pymupdf.Rect(50, 60, 545, 800), "Signed agreement. " * 30, fontsize=11)
+    doc.insert_pdf(pymupdf.open(stream=_pdf_scanned(), filetype="pdf"))
+    parsed = parse_document(doc.tobytes(), "Agreement.pdf")
+    assert parsed.ocr_pages == [2] and parsed.elements[0].page_number == 1
+    with pytest.raises(UnsupportedDocumentError) as exc:
+        parse_document(_pdf_scanned(), "Scan.pdf")
+    assert exc.value.needs_ocr
+
+
+def test_running_headers_are_removed_but_repeated_body_lines_are_kept():
+    import pymupdf
+
+    doc = pymupdf.open()
+    for n in range(1, 5):
+        page = doc.new_page()
+        page.insert_text((50, 40), "Monthly statement - ACME Bank", fontsize=9)
+        page.insert_textbox(pymupdf.Rect(50, 120, 545, 700), f"Balance on day {n}: {n * 1000}.50 EUR", fontsize=11)
+        page.insert_text((290, 815), str(n), fontsize=9)
+    parsed = parse_document(doc.tobytes(), "Statement.pdf")
+    body = [e.text for e in parsed.elements if e.section != "Page header and footer"]
+    assert all(f"Balance on day {n}: {n * 1000}.50 EUR" in "\n".join(body) for n in range(1, 5))
+    assert not any("ACME Bank" in t for t in body)
+    [running] = [e.text for e in parsed.elements if e.section == "Page header and footer"]
+    assert running == "Monthly statement - ACME Bank"  # kept once; bare page numbers dropped

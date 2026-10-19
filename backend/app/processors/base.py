@@ -3,11 +3,17 @@ from typing import Any, Dict, List, Optional
 
 
 class UnsupportedDocumentError(Exception):
-    """The file cannot be indexed (unsupported format, empty, encrypted, or no text layer)."""
+    """The file cannot be indexed (unsupported format, empty, encrypted, or no text layer).
 
-    def __init__(self, reason: str):
+    `needs_ocr` marks files whose text is only in images (scans, photos); `file_type` is then the
+    detected format so OCR can take over.
+    """
+
+    def __init__(self, reason: str, needs_ocr: bool = False, file_type: Optional[str] = None):
         super().__init__(reason)
         self.reason = reason
+        self.needs_ocr = needs_ocr
+        self.file_type = file_type
 
 
 @dataclass
@@ -30,6 +36,7 @@ class ParsedDocument:
     elements: List[DocumentElement]
     file_type: str
     warnings: List[str] = field(default_factory=list)
+    ocr_pages: List[int] = field(default_factory=list)  # PDF pages whose text exists only as images
 
 
 def markdown_table(rows: List[List[str]]) -> str:
@@ -85,7 +92,10 @@ def table_elements(
             )
 
     for offset, row in enumerate(rows):
-        row_len = sum(len(_cell(c)) + 3 for c in row)
+        if wide:  # records repeat the column name before every value
+            row_len = sum(len(h or "") + len(_cell(v)) + 4 for h, v in zip(header, row, strict=False) if _cell(v)) + 1
+        else:
+            row_len = sum(len(_cell(c)) + 3 for c in row)
         if group and size + row_len > max_chars:
             flush(numbers[offset - 1])
             group, size, group_start = [], 0, numbers[offset]

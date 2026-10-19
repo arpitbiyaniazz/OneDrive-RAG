@@ -13,13 +13,27 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 # Bumped whenever parsing/chunking changes in a way that should trigger re-indexing.
-PIPELINE_VERSION = "pipeline-3"
+PIPELINE_VERSION = "pipeline-4"
 _MAX_EMBED_INPUT_CHARS = 8000
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
 
+# Mistral rejects embedding requests above ~16k tokens in total; stay well below with an estimate
+# (its tokenizer spends about one token per digit, so spreadsheets are much denser than prose).
+_MAX_BATCH_TOKENS = 10000
+
+
 class EmbeddingError(Exception):
     pass
+
+
+class _BatchTooLarge(Exception):
+    pass
+
+
+def estimate_tokens(text: str) -> int:
+    digits = sum(ch.isdigit() for ch in text)
+    return digits + (len(text) - digits) // 3 + 1
 
 
 class EmbeddingProvider(Protocol):
@@ -54,6 +68,8 @@ class OpenAICompatibleEmbeddings:
             except (RateLimitError, APIConnectionError) as exc:
                 retry = exc
             except APIStatusError as exc:
+                if exc.status_code in (400, 413) and "token" in str(exc.message).lower() and len(batch) > 1:
+                    raise _BatchTooLarge() from exc
                 if exc.status_code < 500:
                     raise EmbeddingError(f"Embedding request rejected ({exc.status_code}): {exc.message}") from exc
                 retry = exc
@@ -64,11 +80,28 @@ class OpenAICompatibleEmbeddings:
             delay = min(delay * 2, 30)
         raise EmbeddingError("unreachable")
 
+    async def _embed_split(self, batch: List[str]) -> List[List[float]]:
+        """Embeds a batch, halving it when the provider says it has too many tokens."""
+        try:
+            return await self._embed(batch)
+        except _BatchTooLarge:
+            middle = len(batch) // 2
+            return await self._embed_split(batch[:middle]) + await self._embed_split(batch[middle:])
+
     async def embed_documents(self, texts: List[str]) -> List[List[float]]:
         out: List[List[float]] = []
         size = max(1, settings.EMBEDDING_BATCH_SIZE)
-        for i in range(0, len(texts), size):
-            out.extend(await self._embed([t[:_MAX_EMBED_INPUT_CHARS] for t in texts[i:i + size]]))
+        batch: List[str] = []
+        tokens = 0
+        for text in (t[:_MAX_EMBED_INPUT_CHARS] for t in texts):
+            estimate = estimate_tokens(text)
+            if batch and (len(batch) >= size or tokens + estimate > _MAX_BATCH_TOKENS):
+                out.extend(await self._embed_split(batch))
+                batch, tokens = [], 0
+            batch.append(text)
+            tokens += estimate
+        if batch:
+            out.extend(await self._embed_split(batch))
         return out
 
     async def embed_query(self, text: str) -> List[float]:
@@ -115,3 +148,9 @@ def get_embedding_provider() -> EmbeddingProvider:
 def index_version() -> str:
     """Fingerprint of the indexing pipeline; documents indexed with another version get re-indexed."""
     return f"{PIPELINE_VERSION}|{get_embedding_provider().model_id}"
+
+
+def unsupported_version() -> str:
+    """Fingerprint stored on files that could not be indexed: a parser upgrade or turning OCR on
+    makes sync try them again."""
+    return f"{PIPELINE_VERSION}|ocr:{settings.OCR_PROVIDER}"

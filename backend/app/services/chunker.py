@@ -43,15 +43,18 @@ def _location(file_type: str, section: Optional[str], page_start: Optional[int],
 def chunk_document(parsed: ParsedDocument, title: str) -> List[TextChunk]:
     """Turns parsed elements into retrieval chunks with a contextual header for embedding."""
     pieces: List[DocumentElement] = []
+    title = title.replace("\x00", "")
     for element in parsed.elements:
-        text = element.text.strip()
+        # Postgres text columns cannot hold NUL characters (some PDFs and Office files contain them).
+        text = element.text.replace("\x00", "").strip()
+        section = element.section.replace("\x00", "") if element.section else element.section
         if not text:
             continue
         if len(text) <= MAX_CHARS:
-            pieces.append(DocumentElement(text, element.section, element.page_number, element.kind, element.metadata))
+            pieces.append(DocumentElement(text, section, element.page_number, element.kind, element.metadata))
         else:
             for part in split_text(text):
-                pieces.append(DocumentElement(part, element.section, element.page_number, element.kind, element.metadata))
+                pieces.append(DocumentElement(part, section, element.page_number, element.kind, element.metadata))
 
     # Merge consecutive small text pieces of the same section (tables and slides stay separate).
     merged: List[Dict[str, Any]] = []
@@ -110,9 +113,19 @@ def chunk_document(parsed: ParsedDocument, title: str) -> List[TextChunk]:
     for index, item in enumerate(compact):
         location = _location(parsed.file_type, item["section"], item["page_start"], item["page_end"], item["meta"])
         context = f"Document: {title}" + (f" | {location}" if location else "")
+        content = item["text"]
+        prev = compact[index - 1] if index else None
+        if (
+            prev is not None
+            and prev["kind"] == item["kind"] == "text"
+            and prev["section"] == item["section"]
+            and prev["page_end"] and item["page_start"] == prev["page_end"] + 1
+        ):
+            # A sentence can run over a page break: repeat the end of the previous page.
+            content = _tail(prev["text"]) + "\n" + content
         chunks.append(
             TextChunk(
-                content=item["text"],
+                content=content,
                 chunk_index=index,
                 section=item["section"],
                 page_start=item["page_start"],
@@ -122,6 +135,18 @@ def chunk_document(parsed: ParsedDocument, title: str) -> List[TextChunk]:
             )
         )
     return chunks
+
+
+def _tail(text: str, size: int = OVERLAP_CHARS) -> str:
+    """The last ~`size` characters, starting at a sentence or word boundary."""
+    if len(text) <= size:
+        return text
+    window = text[-size:]
+    for sep in (". ", "\n", " "):
+        cut = window.find(sep)
+        if cut != -1:
+            return window[cut + len(sep):]
+    return window
 
 
 def split_text(text: str, target: int = TARGET_CHARS, max_chars: int = MAX_CHARS, overlap: int = OVERLAP_CHARS) -> List[str]:
@@ -146,7 +171,9 @@ def split_text(text: str, target: int = TARGET_CHARS, max_chars: int = MAX_CHARS
         if end >= length:
             break
         next_start = end - overlap
-        # Start the overlap at a word boundary.
+        # Start the overlap at a line boundary (whole table rows, list items), else at a word boundary.
+        newline = text.find("\n", next_start, end)
         space = text.find(" ", next_start, end)
-        start = space + 1 if space != -1 else max(next_start, start + 1)
+        boundary = newline if newline != -1 else space
+        start = boundary + 1 if boundary != -1 else max(next_start, start + 1)
     return out
