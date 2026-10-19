@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -50,17 +51,39 @@ class LLMClient:
             if delta:
                 yield delta
 
-    async def complete_json(self, messages: List[Dict[str, str]], request_timeout: float, **kwargs) -> str:
+    async def complete(self, messages: List[Dict[str, str]], max_tokens: int, request_timeout: float) -> str:
+        """A whole (non-streamed) completion, e.g. the notes for one part of a long document."""
         if self.provider == "mock":
-            return "{}"
+            return _mock_notes(messages[-1]["content"])
         res = await self.client.chat.completions.create(
             model=self.model,
             messages=messages,
-            temperature=0.0,
-            max_tokens=400,
-            response_format={"type": "json_object"},
+            temperature=settings.LLM_TEMPERATURE,
+            max_tokens=max_tokens,
             timeout=request_timeout,
-            **kwargs,
+        )
+        return res.choices[0].message.content or ""
+
+    async def check(self) -> None:
+        """Raises when the provider rejects the credentials (used by startup checks and `app.cli doctor`)."""
+        if self.provider != "mock":
+            await self.client.models.list()
+
+    async def complete_json(self, messages: List[Dict[str, str]], request_timeout: float, **kwargs) -> str:
+        if self.provider == "mock":
+            return "{}"
+        # No SDK retries: the caller has a fallback, and retries would multiply the deadline.
+        res = await asyncio.wait_for(
+            self.client.with_options(max_retries=0).chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=0.0,
+                max_tokens=400,
+                response_format={"type": "json_object"},
+                timeout=request_timeout,
+                **kwargs,
+            ),
+            timeout=request_timeout + 1,
         )
         return res.choices[0].message.content or "{}"
 
@@ -85,6 +108,17 @@ def get_llm_client() -> LLMClient:
 
 
 _SOURCE_RE = re.compile(r'<source id="(\d+)"[^>]*>\n(.*?)\n</source>', re.DOTALL)
+_NOTE_RE = re.compile(r"^- (.+?) \[(\d+)\]$", re.MULTILINE)
+
+
+def _mock_notes(content: str) -> str:
+    """Mock notes for one part of a document: the first sentence of each passage."""
+    lines = []
+    for source_id, passage in _SOURCE_RE.findall(content):
+        first = re.split(r"(?<=[.!?])\s+|\n+", passage.strip())[0].strip()
+        if first:
+            lines.append(f"- {first} [{source_id}]")
+    return "\n".join(lines)
 
 
 async def _mock_stream(messages: List[Dict[str, str]]) -> AsyncIterator[str]:
@@ -92,12 +126,15 @@ async def _mock_stream(messages: List[Dict[str, str]]) -> AsyncIterator[str]:
     content = messages[-1]["content"]
     question = content.rsplit("<question>", 1)[-1]
     q_words = set(re.findall(r"\w+", question.lower()))
+    candidates = [(source_id, sentence)
+                  for source_id, passage in _SOURCE_RE.findall(content)
+                  for sentence in re.split(r"(?<=[.!?])\s+|\n+", passage)]
+    candidates += [(source_id, note) for note, source_id in _NOTE_RE.findall(content)]
     best, best_score = None, 0
-    for source_id, passage in _SOURCE_RE.findall(content):
-        for sentence in re.split(r"(?<=[.!?])\s+|\n+", passage):
-            score = len(q_words & set(re.findall(r"\w+", sentence.lower())))
-            if sentence.strip() and score > best_score:
-                best, best_score = (source_id, sentence.strip()), score
+    for source_id, sentence in candidates:
+        score = len(q_words & set(re.findall(r"\w+", sentence.lower())))
+        if sentence.strip() and score > best_score:
+            best, best_score = (source_id, sentence.strip()), score
     text = f"{best[1]} [{best[0]}]" if best else "I couldn't find this in your connected documents."
     for word in text.split(" "):
         yield word + " "

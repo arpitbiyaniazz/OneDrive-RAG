@@ -4,7 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Sequence
 
-from sqlalchemy import func, literal_column, select
+from sqlalchemy import String, cast, func, literal_column, select, text
+from sqlalchemy.dialects.postgresql import TSQUERY
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -89,36 +90,72 @@ def _base(user_id: str, model_id: str, document_ids: Optional[Sequence[str]], fi
     return stmt
 
 
-def _tsquery(text: str) -> Optional[str]:
-    terms = []
-    for word in _WORD_RE.findall(text.lower()):
-        if word not in _STOPWORDS and (len(word) > 1 or word.isdigit()) and word not in terms:
-            terms.append(word)
-    return " | ".join(terms[:32]) or None
+def _keyword_text(text: str) -> Optional[str]:
+    """The question without stopwords and search operators. Postgres then tokenizes it with the same
+    parser as the indexed text, so e-mails, codes (ZX-4471), versions (4.2.1) and decimals match."""
+    kept = []
+    for token in text.split():
+        bare = token.strip(".,;:!?()[]{}\"'“”‘’").lower()
+        if not bare or bare in _STOPWORDS or bare in ("or", "and", "not"):
+            continue
+        kept.append(token.lstrip("-").replace('"', " "))  # a leading "-" would mean NOT, quotes mean phrases
+    return " ".join(kept[:32]) or None
+
+
+def _tsquery(text: str):
+    """OR over the question's terms, built by websearch_to_tsquery (which ANDs them)."""
+    anded = cast(func.websearch_to_tsquery(literal_column("'simple'"), text), String)
+    return cast(func.replace(anded, " & ", " | "), TSQUERY)
+
+
+_iterative_scan: Optional[bool] = None
+
+
+def _version(value: Optional[str]) -> tuple:
+    try:
+        return tuple(int(p) for p in (value or "0").split(".")[:3])
+    except ValueError:
+        return (0,)
+
+
+async def _filtered_hnsw(db) -> None:
+    """The HNSW index is shared by all users and pgvector filters *after* the index scan, so a small
+    tenant could get only a handful of its own chunks back. Iterative scans (pgvector 0.8+) keep
+    scanning until enough rows pass the user/model filters."""
+    global _iterative_scan
+    if _iterative_scan is None:
+        version = (await db.execute(text("SELECT extversion FROM pg_extension WHERE extname = 'vector'"))).scalar()
+        _iterative_scan = _version(version) >= (0, 8, 0)
+    if _iterative_scan:
+        await db.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
+        await db.execute(text(f"SET LOCAL hnsw.ef_search = {min(1000, max(100, 2 * settings.RETRIEVAL_CANDIDATES))}"))
 
 
 async def _vector_search(db, query_vector, limit, **filters) -> List:
+    await _filtered_hnsw(db)
     distance = DocumentChunk.embedding.cosine_distance(query_vector)
     stmt = _base(**filters).add_columns(distance.label("distance")).where(DocumentChunk.embedding.is_not(None))
     return (await db.execute(stmt.order_by(distance).limit(limit))).all()
 
 
 async def _keyword_search(db, text: str, limit, **filters) -> List:
-    query = _tsquery(text)
+    query = _keyword_text(text)
     if not query:
         return []
-    tsq = func.to_tsquery(literal_column("'simple'"), query)
+    tsq = _tsquery(query)
     rank = func.ts_rank_cd(DocumentChunk.search_vector, tsq)
     stmt = _base(**filters).add_columns(rank.label("rank")).where(DocumentChunk.search_vector.op("@@")(tsq))
     return (await db.execute(stmt.order_by(rank.desc()).limit(limit))).all()
 
 
 def _fuse(result_lists: List[tuple[str, List]], top_k: int, per_doc_cap: int) -> List[RetrievedChunk]:
+    """Reciprocal rank fusion; "hint_" lists (file-type/date cues) count at _BOOST_WEIGHT."""
     fused: Dict[str, RetrievedChunk] = {}
     for signal, rows in result_lists:
+        weight = _BOOST_WEIGHT if signal.startswith("hint_") else 1.0
         for rank, row in enumerate(rows):
             chunk = fused.get(row.id) or _to_chunk(row)
-            chunk.score += 1.0 / (_RRF_K + rank + 1)
+            chunk.score += weight / (_RRF_K + rank + 1)
             chunk.signals[signal] = rank + 1
             fused[row.id] = chunk
     ordered = sorted(fused.values(), key=lambda c: c.score, reverse=True)
@@ -133,37 +170,45 @@ def _fuse(result_lists: List[tuple[str, List]], top_k: int, per_doc_cap: int) ->
     return picked
 
 
+_BOOST_WEIGHT = 0.5  # file-type / date hints raise matching passages without hiding the others
+
+
 async def hybrid_search(db: AsyncSession, user_id: str, plan: QueryPlan, top_k: Optional[int] = None) -> List[RetrievedChunk]:
     top_k = top_k or settings.RETRIEVAL_TOP_K
     provider = get_embedding_provider()
     query_vector = await provider.embed_query(plan.search_query)
     candidates = settings.RETRIEVAL_CANDIDATES
 
-    async def run(document_ids=None, file_types=(), modified_after=None, k=top_k, cap=settings.RETRIEVAL_MAX_CHUNKS_PER_DOCUMENT):
+    async def lists(document_ids=None, file_types=(), modified_after=None, prefix=""):
         filters = dict(user_id=user_id, model_id=provider.model_id, document_ids=document_ids,
                        file_types=file_types, modified_after=modified_after)
-        vector_rows = await _vector_search(db, query_vector, candidates, **filters)
-        keyword_rows = await _keyword_search(db, plan.search_query, candidates, **filters)
-        return _fuse([("vector", vector_rows), ("keyword", keyword_rows)], k, cap)
+        return [(f"{prefix}vector", await _vector_search(db, query_vector, candidates, **filters)),
+                (f"{prefix}keyword", await _keyword_search(db, plan.search_query, candidates, **filters))]
 
     results: List[RetrievedChunk] = []
-    if plan.target_document_ids:
-        # The user named documents: their best passages first, then the rest of the knowledge base.
-        results = await run(document_ids=plan.target_document_ids, k=max(4, top_k // 2), cap=top_k)
+    targets = plan.target_document_ids
+    if len(targets) == 1:
+        # The user named a document: its best passages first, then the rest of the knowledge base.
+        results = _fuse(await lists(document_ids=targets), max(4, top_k // 2), top_k)
+    elif targets:
+        # Several named documents (comparisons): the same share of passages from each.
+        share = max(2, top_k // len(targets))
+        for doc_id in targets:
+            results += _fuse(await lists(document_ids=[doc_id]), share, share)
+
+    signals = await lists()
     if plan.file_types or plan.modified_after:
-        filtered = await run(file_types=plan.file_types, modified_after=plan.modified_after)
-        results += [c for c in filtered if c.chunk_id not in {r.chunk_id for r in results}]
-    if len(results) < top_k:
-        general = await run()
-        seen = {r.chunk_id for r in results}
-        results += [c for c in general if c.chunk_id not in seen][: top_k - len(results)]
-    return results[:top_k]
+        # "in my spreadsheets", "updated this month": a boost, never a hard filter. A cue can be wrong
+        # ("balance sheet" in a PDF) and must not push the answer out.
+        signals += await lists(file_types=plan.file_types, modified_after=plan.modified_after, prefix="hint_")
+    seen = {r.chunk_id for r in results}
+    general = [c for c in _fuse(signals, top_k + len(seen), settings.RETRIEVAL_MAX_CHUNKS_PER_DOCUMENT)
+               if c.chunk_id not in seen]
+    return (results + general)[:top_k]
 
 
-async def document_chunks_in_order(db: AsyncSession, user_id: str, document_id: str, max_chars: int) -> List[RetrievedChunk]:
-    """A document's chunks in reading order; long documents are sampled evenly to fit the budget."""
-    stmt = _base(user_id, get_embedding_provider().model_id, [document_id], (), None).order_by(DocumentChunk.chunk_index)
-    chunks = [_to_chunk(row) for row in (await db.execute(stmt)).all()]
+def sample_evenly(chunks: List[RetrievedChunk], max_chars: int) -> List[RetrievedChunk]:
+    """Keeps passages spread evenly over the document so the total fits `max_chars`."""
     total = sum(len(c.content) for c in chunks)
     if total <= max_chars or not chunks:
         return chunks
@@ -172,7 +217,21 @@ async def document_chunks_in_order(db: AsyncSession, user_id: str, document_id: 
     return [chunks[int(i * step)] for i in range(keep)]
 
 
-async def load_catalog(db: AsyncSession, user_id: str, limit: int = 500) -> List[CatalogEntry]:
+async def document_chunks_in_order(db: AsyncSession, user_id: str, document_id: str,
+                                   max_chars: Optional[int] = None) -> List[RetrievedChunk]:
+    """A document's chunks in reading order (sampled evenly to fit `max_chars` when given)."""
+    stmt = _base(user_id, get_embedding_provider().model_id, [document_id], (), None).order_by(DocumentChunk.chunk_index)
+    chunks = [_to_chunk(row) for row in (await db.execute(stmt)).all()]
+    return sample_evenly(chunks, max_chars) if max_chars else chunks
+
+
+async def count_indexed(db: AsyncSession, user_id: str) -> int:
+    return (await db.execute(
+        select(func.count(Document.id)).where(Document.user_id == user_id, Document.status == INDEXED)
+    )).scalar_one()
+
+
+async def load_catalog(db: AsyncSession, user_id: str, limit: int = 5000) -> List[CatalogEntry]:
     rows = (await db.execute(
         select(Document.id, Document.filename, Document.file_type, Document.folder_path, Document.modified_date, Document.drive_type)
         .where(Document.user_id == user_id, Document.status == INDEXED)

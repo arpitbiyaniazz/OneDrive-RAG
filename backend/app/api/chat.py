@@ -2,12 +2,13 @@ import asyncio
 import json
 import logging
 import uuid
+from datetime import timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import get_current_user
@@ -51,9 +52,30 @@ async def _owned_session(db: AsyncSession, session_id: str, user: User) -> ChatS
     return session
 
 
+async def _enforce_rate_limit(db: AsyncSession, user_id: str) -> None:
+    """Per-user question limits (CHAT_RATE_LIMIT_PER_MINUTE / _PER_DAY) protect the LLM budget."""
+    per_minute, per_day = settings.CHAT_RATE_LIMIT_PER_MINUTE, settings.CHAT_RATE_LIMIT_PER_DAY
+    if per_minute <= 0 and per_day <= 0:
+        return
+    now = utcnow()
+    minute_ago = now - timedelta(minutes=1)
+    last_minute, last_day = (await db.execute(
+        select(func.count().filter(ChatMessage.created_at > minute_ago), func.count())
+        .where(ChatMessage.user_id == user_id, ChatMessage.role == "user",
+               ChatMessage.created_at > now - timedelta(days=1))
+    )).one()
+    if per_minute > 0 and last_minute >= per_minute:
+        raise HTTPException(status_code=429, detail="You are asking questions too quickly. Wait a minute and try again.",
+                            headers={"Retry-After": "60"})
+    if per_day > 0 and last_day >= per_day:
+        raise HTTPException(status_code=429, detail="You have reached today's question limit. Try again tomorrow.",
+                            headers={"Retry-After": "3600"})
+
+
 @router.post("/stream")
 async def stream_chat(req: ChatStreamRequest, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     """Server-Sent Events: {"status"} -> {"token"}* -> {"done", citations, message_id} or {"error"}."""
+    await _enforce_rate_limit(db, user.id)
     session = await _owned_session(db, req.session_id, user) if req.session_id else None
     history: List[dict] = []
     if session is None:
@@ -91,7 +113,9 @@ async def stream_chat(req: ChatStreamRequest, db: AsyncSession = Depends(get_db)
                 async with AsyncSessionLocal() as work_db:
                     prepared = await rag_service.prepare(work_db, user_id, question, history)
                 citations = prepared.citations
-                yield _sse({"status": "generating", "intent": prepared.plan.intent, "sources": len(citations)})
+                # A long document is first read part by part ("reading"), then the answer is written.
+                status = {"status": "reading", "parts": len(prepared.parts)} if prepared.parts else {"status": "generating"}
+                yield _sse({**status, "intent": prepared.plan.intent, "sources": len(citations)})
                 async for token in rag_service.stream_answer(prepared):
                     answer.append(token)
                     yield _sse({"token": token})
@@ -107,6 +131,9 @@ async def stream_chat(req: ChatStreamRequest, db: AsyncSession = Depends(get_db)
             yield _sse({"error": error, "done": True, "session_id": session_id, "message_id": message_id})
         finally:
             text = "".join(answer).strip()
+            if error is None and not text:
+                error = "The assistant returned an empty answer. Please try again."
+                yield _sse({"error": error, "done": True, "session_id": session_id, "message_id": message_id})
             if error and text:
                 text += "\n\n_(Answer interrupted.)_" if error == "cancelled" else "\n\n_(Answer incomplete because of an error.)_"
             if text:
@@ -182,5 +209,8 @@ async def feedback(req: FeedbackRequest, db: AsyncSession = Depends(get_db), use
         raise HTTPException(status_code=404, detail="Message not found.")
     message.feedback = req.feedback or None
     await db.commit()
-    logged = log_score(message.langfuse_trace_id, "user_feedback", 1.0 if req.feedback > 0 else 0.0, req.comment)
+    logged = False
+    if req.feedback:  # 0 clears the rating locally; it is not a negative score
+        logged = log_score(message.langfuse_trace_id, "user_feedback", 1.0 if req.feedback > 0 else 0.0, req.comment,
+                           score_id=f"feedback-{message.id}")
     return {"status": "recorded", "logged_to_langfuse": logged}

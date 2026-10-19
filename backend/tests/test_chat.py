@@ -96,3 +96,23 @@ async def test_sessions_list_and_delete(client, auth_headers):
     assert [s["id"] for s in sessions] == [session_id]
     assert (await client.delete(f"/api/chat/sessions/{session_id}", headers=auth_headers)).status_code == 200
     assert (await client.get("/api/chat/sessions", headers=auth_headers)).json()["sessions"] == []
+
+
+async def test_questions_are_rate_limited_per_user(client, auth_headers, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "CHAT_RATE_LIMIT_PER_MINUTE", 2)
+    for _ in range(2):
+        assert (await client.post("/api/chat/stream", headers=auth_headers, json={"query": "hello"})).status_code == 200
+    res = await client.post("/api/chat/stream", headers=auth_headers, json={"query": "hello"})
+    assert res.status_code == 429 and res.headers["Retry-After"] == "60"
+
+
+async def test_an_empty_model_answer_is_reported(client, auth_headers, monkeypatch):
+    async def silent(self, messages, **kwargs):
+        return
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(llm_service.LLMClient, "stream", silent)
+    events = _events((await client.post("/api/chat/stream", headers=auth_headers, json={"query": "hello"})).text)
+    assert events[-1]["done"] is True and "empty answer" in events[-1]["error"]
