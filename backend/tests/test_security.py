@@ -47,20 +47,82 @@ async def test_forged_token_with_other_secret_is_rejected(client):
     assert (await client.get("/api/auth/me", headers={"Authorization": f"Bearer {forged}"})).status_code == 401
 
 
+VERIFIER = "v" * 64
+
+
 @pytest.mark.parametrize("path", ["/api/auth/callback", "/api/auth/google/callback"])
 async def test_oauth_callback_rejects_missing_or_forged_state(client, path):
-    assert (await client.get(path, params={"code": "mock_dev_code_123"})).status_code == 400
-    assert (await client.get(path, params={"code": "x", "state": "forged"})).status_code == 400
+    assert (await client.get(path, params={"code": "mock_dev_code_123"})).status_code == 405  # POST only
+    assert (await client.post(path, json={"code": "mock_dev_code_123"})).status_code == 422
+    forged = {"code": "x", "state": "forged", "code_verifier": VERIFIER}
+    assert (await client.post(path, json=forged)).status_code == 400
 
 
-def test_oauth_state_is_bound_to_provider_and_expires(monkeypatch):
-    state = security.create_oauth_state("google", "verifier-123", "user-1")
-    assert security.verify_oauth_state(state, "google") == ("verifier-123", "user-1")
+def test_oauth_state_is_bound_to_provider_verifier_and_expiry(monkeypatch):
+    verifier, challenge = security.create_pkce_pair()
+    state = security.create_oauth_state("google", challenge, "user-1")
+    assert security.verify_oauth_state(state, "google", verifier) == "user-1"
     with pytest.raises(security.OAuthStateError):
-        security.verify_oauth_state(state, "microsoft")
+        security.verify_oauth_state(state, "microsoft", verifier)
+    with pytest.raises(security.OAuthStateError):  # code + state intercepted without the browser's verifier
+        security.verify_oauth_state(state, "google", VERIFIER)
     monkeypatch.setattr(security.settings, "OAUTH_STATE_TTL_SECONDS", -1)
     with pytest.raises(security.OAuthStateError):
-        security.verify_oauth_state(state, "google")
+        security.verify_oauth_state(state, "google", verifier)
+
+
+def _fake_provider(monkeypatch, name, profile):
+    from app.services import oauth
+
+    provider_class = type(oauth.PROVIDERS[name])
+
+    async def exchange(self, code, verifier):
+        return {"access_token": f"{name}-access", "refresh_token": f"{name}-refresh", "expires_in": 3600}
+
+    async def who(self, access_token):
+        return profile
+
+    monkeypatch.setattr(provider_class, "exchange_code", exchange)
+    monkeypatch.setattr(provider_class, "profile", who)
+    monkeypatch.setattr(provider_class, "configured", property(lambda self: True))
+
+
+async def _sign_in(client, provider, link_headers=None):
+    login = "/api/auth/google/login" if provider == "google" else "/api/auth/login"
+    start = (await client.get(login, headers=link_headers or {})).json()
+    callback = "/api/auth/google/callback" if provider == "google" else "/api/auth/callback"
+    return await client.post(callback, json={"code": "c", "state": start["state"], "code_verifier": start["code_verifier"]})
+
+
+async def test_unverified_email_cannot_capture_a_verified_sign_in(client, monkeypatch):
+    """Pre-hijack: an outside Microsoft tenant sets `mail` to the victim's address and signs in first."""
+    from app.services.oauth import OAuthProfile
+
+    _fake_provider(monkeypatch, "microsoft", OAuthProfile("attacker-oid", "victim@gmail.com", "Mallory", False))
+    _fake_provider(monkeypatch, "google", OAuthProfile("victim-sub", "victim@gmail.com", "Victim", True))
+    assert (await _sign_in(client, "microsoft")).status_code == 200
+    res = await _sign_in(client, "google")
+    assert res.status_code == 409  # never linked to the account created from the unverified address
+    from sqlalchemy import select
+
+    from app.db.database import AsyncSessionLocal
+    from app.models.user import OAuthAccount
+
+    async with AsyncSessionLocal() as s:
+        assert (await s.execute(select(OAuthAccount.provider))).scalars().all() == ["microsoft"]
+
+
+async def test_signed_in_users_can_connect_their_second_drive(client, monkeypatch):
+    from app.services.oauth import OAuthProfile
+
+    _fake_provider(monkeypatch, "microsoft", OAuthProfile("oid-1", "ana@contoso.example", "Ana", False))
+    _fake_provider(monkeypatch, "google", OAuthProfile("sub-1", "ana.personal@gmail.com", "Ana", True))
+    first = (await _sign_in(client, "microsoft")).json()
+    headers = {"Authorization": f"Bearer {first['token']}"}
+    linked = await _sign_in(client, "google", link_headers=headers)
+    assert linked.status_code == 200
+    me = linked.json()["user"]
+    assert me["id"] == first["user"]["id"] and me["onedrive_connected"] and me["gdrive_connected"]
 
 
 async def test_sandbox_login_is_disabled_outside_sandbox_mode(client, monkeypatch):

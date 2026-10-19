@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode
 
+import httpx
+
 from app.core.config import settings
 from app.services.connectors.base import ConnectorAuthError, ConnectorError, http_client
 
@@ -53,9 +55,15 @@ class OAuthProvider:
         }
         return f"{self.authorize_url}?{urlencode(params)}"
 
+    async def _send(self, method: str, url: str, **kwargs) -> httpx.Response:
+        try:
+            return await http_client().request(method, url, **kwargs)
+        except httpx.TransportError as exc:
+            raise ConnectorError(f"{self.name} sign-in service is unreachable. Try again in a moment.") from exc
+
     async def _token_request(self, data: Dict[str, str]) -> Dict[str, Any]:
         payload = {"client_id": self.client_id, "client_secret": self.client_secret, **data}
-        res = await http_client().post(self.token_url, data=payload)
+        res = await self._send("POST", self.token_url, data=payload)
         if res.status_code != 200:
             body = res.json() if res.headers.get("content-type", "").startswith("application/json") else {}
             error = body.get("error", "")
@@ -111,7 +119,7 @@ class MicrosoftOAuth(OAuthProvider):
         return await super()._token_request({**data, "scope": " ".join(self.scopes)})
 
     async def profile(self, access_token: str) -> OAuthProfile:
-        res = await http_client().get("https://graph.microsoft.com/v1.0/me", headers={"Authorization": f"Bearer {access_token}"})
+        res = await self._send("GET", "https://graph.microsoft.com/v1.0/me", headers={"Authorization": f"Bearer {access_token}"})
         if res.status_code != 200:
             raise ConnectorError("Could not read the Microsoft profile")
         data = res.json()
@@ -144,12 +152,13 @@ class GoogleOAuth(OAuthProvider):
         return settings.GOOGLE_REDIRECT_URI
 
     def extra_auth_params(self) -> Dict[str, str]:
-        # offline access returns a refresh token; consent is only forced when none is stored (see auth.py)
+        # Google only issues a refresh token with offline access on a consent screen, so consent is
+        # requested on every sign-in: re-signing in then always repairs an expired or revoked grant.
         return {"access_type": "offline", "include_granted_scopes": "true", "prompt": "consent"}
 
     async def profile(self, access_token: str) -> OAuthProfile:
-        res = await http_client().get("https://openidconnect.googleapis.com/v1/userinfo",
-                                      headers={"Authorization": f"Bearer {access_token}"})
+        res = await self._send("GET", "https://openidconnect.googleapis.com/v1/userinfo",
+                               headers={"Authorization": f"Bearer {access_token}"})
         if res.status_code != 200:
             raise ConnectorError("Could not read the Google profile")
         data = res.json()

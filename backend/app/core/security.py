@@ -63,31 +63,42 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def pkce_challenge(verifier: str) -> str:
+    return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
+
+
 def create_pkce_pair() -> tuple[str, str]:
     """Returns (code_verifier, S256 code_challenge)."""
     verifier = secrets.token_urlsafe(64)
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
-    return verifier, challenge
+    return verifier, pkce_challenge(verifier)
 
 
-def create_oauth_state(provider: str, code_verifier: str, link_user_id: Optional[str] = None) -> str:
+def create_oauth_state(provider: str, code_challenge: str, link_user_id: Optional[str] = None) -> str:
+    """Builds an encrypted, expiring OAuth `state` bound to the provider and the PKCE challenge
+    (and, when a signed-in user connects another drive, to that user).
+
+    The PKCE verifier itself is handed to the SPA, which keeps it in sessionStorage and posts it with
+    the code, so an intercepted redirect URL (code + state) cannot be redeemed. The SPA also refuses
+    callbacks it did not start (login CSRF).
     """
-    Builds an encrypted, expiring OAuth `state` that carries the PKCE verifier (and, when a signed-in
-    user connects another drive, their id), so the callback needs no server-side session. The SPA
-    also keeps the state in sessionStorage and refuses callbacks it did not start (login CSRF).
-    """
-    payload = json.dumps({"p": provider, "v": code_verifier, "u": link_user_id, "n": secrets.token_urlsafe(16)})
+    payload = json.dumps({"p": provider, "c": code_challenge, "u": link_user_id, "n": secrets.token_urlsafe(16)})
     return _cipher.encrypt(payload.encode("utf-8")).decode("ascii")
 
 
-def verify_oauth_state(state: Optional[str], provider: str) -> tuple[str, Optional[str]]:
-    """Validates the state; returns (PKCE code verifier, user id to link or None)."""
-    if not state:
+def verify_oauth_state(state: Optional[str], provider: str, code_verifier: Optional[str]) -> Optional[str]:
+    """Validates the state and that the verifier belongs to it; returns the user id to link, or None."""
+    if not state or not code_verifier:
         raise OAuthStateError("Missing OAuth state")
     try:
         payload = json.loads(_cipher.decrypt(state.encode("ascii"), ttl=settings.OAUTH_STATE_TTL_SECONDS))
     except (InvalidToken, ValueError, UnicodeEncodeError) as exc:
         raise OAuthStateError("Invalid or expired OAuth state") from exc
-    if payload.get("p") != provider or not payload.get("v"):
+    if payload.get("p") != provider:
         raise OAuthStateError("OAuth state does not match this provider")
-    return payload["v"], payload.get("u")
+    try:
+        challenge = pkce_challenge(code_verifier)
+    except UnicodeEncodeError as exc:
+        raise OAuthStateError("Invalid PKCE verifier") from exc
+    if not payload.get("c") or not secrets.compare_digest(payload["c"], challenge):
+        raise OAuthStateError("The sign-in was started in another browser tab or session")
+    return payload.get("u")

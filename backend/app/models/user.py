@@ -11,6 +11,8 @@ class User(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     email = Column(String(255), unique=True, index=True, nullable=False)
+    # True only when a provider vouched for the address (Google); Microsoft Graph's `mail` is not verified.
+    email_verified = Column(Boolean, default=False, nullable=False, server_default="false")
     full_name = Column(String(255), nullable=True)
     microsoft_id = Column(String(255), unique=True, index=True, nullable=True)
     google_id = Column(String(255), unique=True, index=True, nullable=True)

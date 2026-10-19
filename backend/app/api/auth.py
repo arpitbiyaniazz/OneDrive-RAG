@@ -1,8 +1,9 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -80,13 +81,20 @@ async def _session(db: AsyncSession, user: User) -> dict:
     return {"token": create_access_token(user.id, user.token_version), "user": await _profile(db, user)}
 
 
+class OAuthCallback(BaseModel):
+    code: str = Field(..., min_length=1, max_length=4096)
+    state: str = Field(..., min_length=1, max_length=4096)
+    code_verifier: str = Field(..., min_length=43, max_length=128)
+
+
 def _login_url(provider_name: str, user: Optional[User]) -> dict:
+    """The provider URL plus the PKCE verifier, which only the SPA keeps (sessionStorage)."""
     provider = get_provider(provider_name)
     if not provider.configured:
         raise HTTPException(status_code=503, detail=f"{provider.name} sign-in is not configured on this server.")
     verifier, challenge = create_pkce_pair()
-    state = create_oauth_state(provider_name, verifier, user.id if user else None)
-    return {"auth_url": provider.authorization_url(state, challenge), "state": state}
+    state = create_oauth_state(provider_name, challenge, user.id if user else None)
+    return {"auth_url": provider.authorization_url(state, challenge), "state": state, "code_verifier": verifier}
 
 
 async def _resolve_user(db: AsyncSession, provider_name: str, profile: OAuthProfile, link_user_id: Optional[str]) -> User:
@@ -111,8 +119,10 @@ async def _resolve_user(db: AsyncSession, provider_name: str, profile: OAuthProf
     email = profile.email or f"{profile.subject}@{provider_name}.invalid"
     by_email = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
     if by_email:
-        # Only a provider-verified email may link to an existing account (prevents nOAuth-style takeover).
-        if profile.email_verified and getattr(by_email, id_attr) is None:
+        # Link by email only when BOTH addresses were verified by their providers. An account created
+        # from an unverified address (Microsoft Graph `mail` can be set to anything by any tenant)
+        # must never receive another person's verified sign-in (account pre-hijacking).
+        if profile.email_verified and by_email.email_verified and getattr(by_email, id_attr) is None:
             setattr(by_email, id_attr, profile.subject)
             return by_email
         raise HTTPException(
@@ -120,20 +130,21 @@ async def _resolve_user(db: AsyncSession, provider_name: str, profile: OAuthProf
             detail="An account with this email already exists. Sign in with your original provider, "
                    "then connect this drive from the app.",
         )
-    user = User(email=email, full_name=profile.name or None, **{id_attr: profile.subject})
+    user = User(email=email, full_name=profile.name or None, email_verified=profile.email_verified,
+                **{id_attr: profile.subject})
     db.add(user)
     await db.flush()
     return user
 
 
-async def _callback(provider_name: str, code: str, state: Optional[str], db: AsyncSession) -> dict:
+async def _callback(provider_name: str, body: OAuthCallback, db: AsyncSession) -> dict:
     provider = get_provider(provider_name)
     try:
-        verifier, link_user_id = verify_oauth_state(state, provider_name)
+        link_user_id = verify_oauth_state(body.state, provider_name, body.code_verifier)
     except OAuthStateError:
         raise HTTPException(status_code=400, detail="Sign-in session expired or invalid. Please try again.")
     try:
-        tokens = await provider.exchange_code(code, verifier)
+        tokens = await provider.exchange_code(body.code, body.code_verifier)
         profile = await provider.profile(tokens["access_token"])
     except ConnectorError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -162,16 +173,15 @@ async def google_login(user: Optional[User] = Depends(get_optional_user)):
     return _login_url("google", user)
 
 
-@router.get("/callback")
-async def microsoft_callback(code: str = Query(..., max_length=4096), state: Optional[str] = Query(None, max_length=4096),
-                             db: AsyncSession = Depends(get_db)):
-    return await _callback("microsoft", code, state, db)
+@router.post("/callback")
+async def microsoft_callback(body: OAuthCallback, db: AsyncSession = Depends(get_db)):
+    """Completes Microsoft sign-in: the SPA posts the code and state from the redirect plus its PKCE verifier."""
+    return await _callback("microsoft", body, db)
 
 
-@router.get("/google/callback")
-async def google_callback(code: str = Query(..., max_length=4096), state: Optional[str] = Query(None, max_length=4096),
-                          db: AsyncSession = Depends(get_db)):
-    return await _callback("google", code, state, db)
+@router.post("/google/callback")
+async def google_callback(body: OAuthCallback, db: AsyncSession = Depends(get_db)):
+    return await _callback("google", body, db)
 
 
 @router.post("/sandbox")
