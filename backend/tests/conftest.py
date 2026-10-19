@@ -38,7 +38,7 @@ from app.main import app  # noqa: E402
 from app.models.user import User  # noqa: E402
 from app.services.connectors.sandbox import sandbox_gdrive, sandbox_onedrive  # noqa: E402
 
-_TABLES = "chat_messages, chat_sessions, document_chunks, documents, ingestion_jobs, oauth_accounts, users"
+_TABLES = "chat_messages, chat_sessions, document_chunks, documents, ingestion_jobs, oauth_accounts, tracked_folders, users"
 
 
 def pytest_configure(config):

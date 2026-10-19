@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import JSON, Column, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, Index, Integer, String, Text, text
 
 from app.db.database import Base, utcnow
 
@@ -21,7 +21,12 @@ class IngestionJob(Base):
     """Durable background job (ingestion or sync), claimed by workers with FOR UPDATE SKIP LOCKED."""
 
     __tablename__ = "ingestion_jobs"
-    __table_args__ = (Index("idx_job_status_created", "status", "created_at"),)
+    __table_args__ = (
+        Index("idx_job_status_created", "status", "created_at"),
+        # At most one queued or running sync per user.
+        Index("uq_active_sync_per_user", "user_id", unique=True,
+              postgresql_where=text("job_type = 'sync' AND status IN ('PENDING', 'PROCESSING')")),
+    )
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)

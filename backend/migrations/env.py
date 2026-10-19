@@ -2,6 +2,7 @@ import asyncio
 from logging.config import fileConfig
 
 from alembic import context
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 import app.models  # noqa: F401  (registers tables on Base.metadata)
@@ -24,6 +25,8 @@ def run_migrations_offline() -> None:
 def _run(connection) -> None:
     context.configure(connection=connection, target_metadata=target_metadata)
     with context.begin_transaction():
+        # Replicas starting together run migrations one at a time (released when the transaction ends).
+        connection.execute(text("SELECT pg_advisory_xact_lock(7400031)"))
         context.run_migrations()
 
 

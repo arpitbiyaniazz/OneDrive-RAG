@@ -25,8 +25,9 @@ def _drive(alias: str) -> str:
 
 
 def _error(exc: ConnectorError) -> HTTPException:
+    # 403, not 401: the app session is fine, only the drive grant is missing or expired.
     if isinstance(exc, ConnectorAuthError):
-        return HTTPException(status_code=401, detail={"code": "drive_not_connected", "message": str(exc)})
+        return HTTPException(status_code=403, detail={"code": "drive_not_connected", "message": str(exc)})
     if isinstance(exc, RootFolderMissingError):
         return HTTPException(status_code=404, detail={"code": "root_folder_missing", "message": str(exc)})
     if isinstance(exc, NotFoundError):

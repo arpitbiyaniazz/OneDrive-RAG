@@ -2,6 +2,7 @@ from app.models.chat import ChatMessage, ChatSession
 from app.models.chunk import DocumentChunk
 from app.models.document import Document
 from app.models.ingestion_job import IngestionJob
+from app.models.tracked_folder import TrackedFolder
 from app.models.user import OAuthAccount, User
 
 __all__ = [
@@ -10,6 +11,7 @@ __all__ = [
     "Document",
     "DocumentChunk",
     "IngestionJob",
+    "TrackedFolder",
     "ChatSession",
     "ChatMessage",
 ]

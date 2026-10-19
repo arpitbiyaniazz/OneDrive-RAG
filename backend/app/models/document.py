@@ -10,7 +10,8 @@ PENDING = "PENDING"
 INDEXED = "INDEXED"
 FAILED = "FAILED"
 UNSUPPORTED = "UNSUPPORTED"
-DELETED = "DELETED"
+DELETED = "DELETED"  # gone from the drive
+REMOVED = "REMOVED"  # removed from the knowledge base by the user; sync leaves it out
 
 
 class Document(Base):

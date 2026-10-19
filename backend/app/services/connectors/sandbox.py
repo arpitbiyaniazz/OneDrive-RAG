@@ -164,6 +164,17 @@ class SandboxConnector:
         self._items.pop(file_id, None)
         self._content.pop(file_id, None)
 
+    def add_file(self, file_id: str, name: str, parent_id: str, data: bytes, mime: str = "text/plain") -> None:
+        path = "/" if parent_id == "root" else self._items[parent_id][0].path
+        self._content[file_id] = data
+        self._modified[file_id] = datetime.now(UTC)
+        self._items[file_id] = (self._file_item(file_id, name, mime, path), parent_id)
+
+    def rename(self, file_id: str, name: str) -> None:
+        item, parent = self._items[file_id]
+        self._modified[file_id] = datetime.now(UTC)
+        self._items[file_id] = (self._file_item(file_id, name, item.mime_type, item.folder_path), parent)
+
     # Connector protocol
     async def get_root(self, token: str) -> DriveItem:
         return DriveItem("root", "", True, self.drive_type, "folder", folder_path="/")

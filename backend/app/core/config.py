@@ -61,23 +61,40 @@ class Settings(BaseSettings):
     EMBEDDING_DIMENSION: int = 1024
     EMBEDDING_BATCH_SIZE: int = 16
 
+    # OCR for scanned PDFs and images (Mistral OCR API). Off by default: it sends page images to Mistral.
+    OCR_PROVIDER: Literal["none", "mistral"] = "none"
+    OCR_MODEL: str = "mistral-ocr-latest"
+    OCR_MAX_PAGES: int = 300
+    OCR_TIMEOUT_SECONDS: float = 300.0
+
     # Retrieval and context assembly
     RETRIEVAL_TOP_K: int = 8
     RETRIEVAL_CANDIDATES: int = 40
     RETRIEVAL_MAX_CHUNKS_PER_DOCUMENT: int = 4
     CONTEXT_MAX_CHARS: int = 24000
     CHAT_HISTORY_TURNS: int = 6
+    # Whole-document summaries: documents up to SUMMARY_MAX_CHARS are read in one pass; longer ones
+    # are summarized part by part (at most SUMMARY_MAX_PARTS parts) and the notes merged.
+    SUMMARY_MAX_CHARS: int = 60000
+    SUMMARY_MAX_PARTS: int = 12
 
     # Limits
     MAX_QUERY_CHARS: int = 4000
     MAX_FILE_SIZE_MB: int = 50
     MAX_FILES_PER_JOB: int = 500
+    MAX_TRACKED_FILES: int = 10000
     MAX_CHUNKS_PER_DOCUMENT: int = 5000
+    PARSE_TIMEOUT_SECONDS: float = 300.0
+    MAX_ACTIVE_JOBS_PER_USER: int = 3
+    # Questions per user (0 disables a limit)
+    CHAT_RATE_LIMIT_PER_MINUTE: int = 20
+    CHAT_RATE_LIMIT_PER_DAY: int = 1000
 
     # Background worker (runs inside the API process; safe with several replicas)
     RUN_WORKER: bool = True
     WORKER_POLL_SECONDS: float = 2.0
     WORKER_STALE_JOB_SECONDS: int = 600
+    INGEST_CONCURRENCY: int = 2
 
     # OpenTelemetry
     OTEL_ENABLED: bool = True
@@ -130,7 +147,7 @@ class Settings(BaseSettings):
             problems.append("DEV_MOCK_ONEDRIVE and DEV_MOCK_GDRIVE must be false in production")
         if self.LLM_PROVIDER == "mock" or self.EMBEDDING_PROVIDER == "mock":
             problems.append("LLM_PROVIDER and EMBEDDING_PROVIDER cannot be 'mock' in production")
-        for provider in {self.LLM_PROVIDER, self.EMBEDDING_PROVIDER}:
+        for provider in {self.LLM_PROVIDER, self.EMBEDDING_PROVIDER, self.OCR_PROVIDER}:
             if provider == "mistral" and not self.MISTRAL_API_KEY:
                 problems.append("MISTRAL_API_KEY is required for the configured provider")
             if provider == "openai" and not self.OPENAI_API_KEY:

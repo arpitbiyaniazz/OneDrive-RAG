@@ -110,3 +110,108 @@ async def test_delete_document_removes_its_chunks(client, auth_headers):
     assert (await client.delete(f"/api/documents/{doc['id']}", headers=auth_headers)).status_code == 200
     async with AsyncSessionLocal() as s:
         assert (await s.execute(select(func.count(DocumentChunk.id)))).scalar_one() == 0
+
+
+async def _sync(client, headers):
+    assert (await client.post("/api/sync/start", headers=headers)).status_code == 202
+    await drain_jobs()
+    return (await client.get("/api/sync/status", headers=headers)).json()["last_sync"]
+
+
+async def test_sync_indexes_files_added_to_a_tracked_folder(client, auth_headers):
+    await _ingest(client, auth_headers, [{"id": "folder_finance", "drive_type": "onedrive", "is_folder": True}])
+    folders = (await client.get("/api/tracked-folders", headers=auth_headers)).json()["folders"]
+    assert [(f["name"], f["path"]) for f in folders] == [("Finance", "/Finance")]
+
+    sandbox_onedrive.add_file("file_fin_travel", "Travel Policy.txt", "folder_finance", b"Train travel is preferred under 500 km.")
+    summary = await _sync(client, auth_headers)
+    assert summary["status"] == "COMPLETED", summary
+    assert summary["result"]["summary"] == {"unchanged": 2, "indexed": 1}
+    docs = await _docs(client, auth_headers)
+    assert docs["Travel Policy.txt"]["status"] == "INDEXED" and docs["Travel Policy.txt"]["folder_path"] == "/Finance"
+
+
+async def test_removed_documents_stay_out_until_selected_again(client, auth_headers):
+    await _ingest(client, auth_headers, [{"id": "folder_hr", "drive_type": "onedrive", "is_folder": True}])
+    doc = (await _docs(client, auth_headers))["Employee Handbook.docx"]
+    assert (await client.delete(f"/api/documents/{doc['id']}", headers=auth_headers)).status_code == 200
+    await _sync(client, auth_headers)
+    assert "Employee Handbook.docx" not in await _docs(client, auth_headers)
+
+    await _ingest(client, auth_headers, [{"id": "file_hr_handbook", "drive_type": "onedrive"}])
+    assert (await _docs(client, auth_headers))["Employee Handbook.docx"]["status"] == "INDEXED"
+
+
+async def test_untracked_folders_are_no_longer_scanned(client, auth_headers):
+    await _ingest(client, auth_headers, [{"id": "folder_finance", "drive_type": "onedrive", "is_folder": True}])
+    folder = (await client.get("/api/tracked-folders", headers=auth_headers)).json()["folders"][0]
+    assert (await client.delete(f"/api/tracked-folders/{folder['id']}", headers=auth_headers)).status_code == 200
+    sandbox_onedrive.add_file("file_fin_new", "New Rules.txt", "folder_finance", b"New rules apply from May.")
+    await _sync(client, auth_headers)
+    docs = await _docs(client, auth_headers)
+    assert "New Rules.txt" not in docs and docs["Budget 2026.xlsx"]["status"] == "INDEXED"
+
+
+async def test_a_failed_reindex_keeps_serving_the_previous_version(client, auth_headers, monkeypatch):
+    from app.services.embedding_service import get_embedding_provider
+
+    await _ingest(client, auth_headers, [{"id": "file_fin_expense", "drive_type": "onedrive"}])
+    sandbox_onedrive.set_content("file_fin_expense", b"Meals are now reimbursed up to $90 per day.")
+    provider = get_embedding_provider()
+
+    async def down(self, texts):
+        raise RuntimeError("embedding service down")
+
+    monkeypatch.setattr(type(provider), "embed_documents", down)
+    summary = await _sync(client, auth_headers)
+    assert summary["result"]["summary"] == {"failed": 1}
+    doc = (await _docs(client, auth_headers))["Expense Policy.txt"]
+    assert doc["status"] == "INDEXED" and doc["chunk_count"] > 0 and "previous version" in doc["error_message"]
+
+    monkeypatch.undo()
+    summary = await _sync(client, auth_headers)
+    assert summary["result"]["summary"] == {"indexed": 1}
+    res = await client.post("/api/chat/stream", headers=auth_headers, json={"query": "meal reimbursement per day"})
+    assert "$90" in res.text
+
+
+async def test_renames_update_the_document_header_without_reembedding(client, auth_headers):
+    await _ingest(client, auth_headers, [{"id": "file_fin_expense", "drive_type": "onedrive"}])
+    sandbox_onedrive.rename("file_fin_expense", "Travel and Expense Policy.txt")
+    summary = await _sync(client, auth_headers)
+    assert summary["result"]["summary"] == {"unchanged": 1}
+    async with AsyncSessionLocal() as s:
+        contexts = (await s.execute(select(DocumentChunk.context))).scalars().all()
+    assert contexts and all(c.startswith("Document: Travel and Expense Policy.txt") for c in contexts)
+
+
+async def test_too_many_queued_ingestion_jobs_are_refused(client, auth_headers):
+    item = {"items": [{"id": "file_hr_leave", "drive_type": "onedrive"}]}
+    for _ in range(3):
+        assert (await client.post("/api/ingestion/start", headers=auth_headers, json=item)).status_code == 202
+    assert (await client.post("/api/ingestion/start", headers=auth_headers, json=item)).status_code == 429
+
+
+async def test_an_interrupted_job_is_handed_back(client, auth_headers, monkeypatch):
+    from app.models.ingestion_job import IngestionJob
+    from app.services import jobs
+
+    res = await client.post("/api/ingestion/start", headers=auth_headers,
+                            json={"items": [{"id": "file_hr_leave", "drive_type": "onedrive"}]})
+    started = asyncio.Event()
+
+    async def slow(job):
+        started.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(jobs, "run_ingest", slow)
+    job = await jobs.claim_next()
+    task = asyncio.create_task(jobs.run_job(job))
+    await started.wait()
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    async with AsyncSessionLocal() as s:
+        assert (await s.get(IngestionJob, res.json()["job_id"])).status == "PENDING"

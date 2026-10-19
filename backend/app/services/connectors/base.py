@@ -47,6 +47,7 @@ class DriveItem:
     created_date: Optional[datetime] = None
     web_url: str = ""
     folder_path: str = "/"  # folder containing the item, relative to the app root folder
+    content_id: Optional[str] = None  # id whose bytes are downloaded when it differs (Google shortcuts)
 
     @property
     def path(self) -> str:
@@ -54,7 +55,7 @@ class DriveItem:
 
     @property
     def supported(self) -> bool:
-        return self.is_folder or is_supported(self.name, self.mime_type)
+        return self.is_folder or is_supported(self.name, self.mime_type, allow_images=settings.OCR_PROVIDER != "none")
 
     def to_api(self) -> Dict[str, Any]:
         return {
@@ -84,14 +85,17 @@ class Connector(Protocol):
 
 
 async def walk_files(connector: Connector, token: str, folder_id: str, folder_path: str, limit: int) -> List[DriveItem]:
-    """Recursively lists files under a folder (breadth-first, at most `limit` files).
+    """Recursively lists files under a folder, breadth-first.
 
-    `folder_path` is the folder's own path relative to the app root ("/" for the root itself).
+    At most `limit` indexable files are returned, plus up to `limit` files that cannot be indexed
+    (they are cheap to record, and must not use up the limit: a folder of photos would otherwise
+    hide the PDFs next to them). `folder_path` is the folder's own path relative to the app root.
     """
-    files: List[DriveItem] = []
+    supported: List[DriveItem] = []
+    unsupported: List[DriveItem] = []
     queue = [(folder_id, folder_path)]
     seen = set()
-    while queue and len(files) < limit:
+    while queue and len(supported) < limit:
         folder_id, path = queue.pop(0)
         if folder_id in seen:
             continue
@@ -99,11 +103,14 @@ async def walk_files(connector: Connector, token: str, folder_id: str, folder_pa
         for item in await connector.list_children(token, folder_id, path):
             if item.is_folder:
                 queue.append((item.id, item.path))
-            else:
-                files.append(item)
-                if len(files) >= limit:
-                    break
-    return files
+            elif item.supported:
+                if len(supported) < limit:
+                    supported.append(item)
+            elif len(unsupported) < limit:
+                unsupported.append(item)
+    if len(supported) >= limit:
+        logger.info("Folder listing stopped at %d indexable files", limit)
+    return supported + unsupported
 
 
 def parse_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -143,6 +150,38 @@ def _retry_after(res: httpx.Response, default: float) -> float:
             return default
 
 
+def _rate_limited(res: httpx.Response) -> bool:
+    """Google reports per-user quota exhaustion as 403 with a rateLimitExceeded reason."""
+    if res.status_code != 403:
+        return False
+    try:
+        body = res.text
+    except Exception:
+        return False
+    return "rateLimitExceeded" in body or "userRateLimitExceeded" in body
+
+
+async def _send(method: str, url: str, headers: Dict[str, str], params: Optional[Dict[str, Any]],
+                max_bytes: Optional[int]) -> tuple[httpx.Response, Optional[bytes]]:
+    """One HTTP attempt. With max_bytes the body is streamed and capped; returns (response, body)."""
+    if max_bytes is None:
+        return await http_client().request(method, url, headers=headers, params=params), None
+    async with http_client().stream(method, url, headers=headers, params=params) as res:
+        if res.status_code >= 300:
+            await res.aread()
+            return res, None
+        declared = int(res.headers.get("Content-Length") or 0)
+        if declared > max_bytes:
+            raise FileTooLargeError(f"File exceeds the {settings.MAX_FILE_SIZE_MB} MB limit")
+        chunks, total = [], 0
+        async for part in res.aiter_bytes():
+            total += len(part)
+            if total > max_bytes:
+                raise FileTooLargeError(f"File exceeds the {settings.MAX_FILE_SIZE_MB} MB limit")
+            chunks.append(part)
+        return res, b"".join(chunks)
+
+
 async def api_request(
     method: str,
     url: str,
@@ -155,37 +194,21 @@ async def api_request(
     """Calls a drive API with retries on throttling/5xx. With max_bytes, streams and returns the body."""
     headers = {"Authorization": f"Bearer {token}"}
     delay = 1.0
-    for attempt in range(5):
+    attempts = 5
+    for attempt in range(attempts):
+        last = attempt == attempts - 1
         try:
-            if max_bytes is None:
-                res = await http_client().request(method, url, headers=headers, params=params)
-                body = None
-            else:
-                async with http_client().stream(method, url, headers=headers, params=params) as res:
-                    if res.status_code == 200:
-                        declared = int(res.headers.get("Content-Length") or 0)
-                        if declared > max_bytes:
-                            raise FileTooLargeError(f"File exceeds the {settings.MAX_FILE_SIZE_MB} MB limit")
-                        chunks, total = [], 0
-                        async for part in res.aiter_bytes():
-                            total += len(part)
-                            if total > max_bytes:
-                                raise FileTooLargeError(f"File exceeds the {settings.MAX_FILE_SIZE_MB} MB limit")
-                            chunks.append(part)
-                        return b"".join(chunks)
-                    await res.aread()
-                    body = res
+            res, body = await _send(method, url, headers, params, max_bytes)
         except httpx.TransportError as exc:
-            if attempt == 4:
+            if last:
                 raise ConnectorError(f"{service} is unreachable: {type(exc).__name__}") from exc
             await asyncio.sleep(delay)
             delay *= 2
             continue
 
-        res = body or res
         if res.status_code < 300:
-            return res
-        if res.status_code in RETRY_STATUSES and attempt < 4:
+            return body if max_bytes is not None else res
+        if (res.status_code in RETRY_STATUSES or _rate_limited(res)) and not last:
             wait = _retry_after(res, delay)
             logger.warning("%s returned %s; retrying in %.1fs", service, res.status_code, wait)
             await asyncio.sleep(wait)

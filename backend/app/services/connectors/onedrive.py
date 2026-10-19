@@ -1,5 +1,5 @@
-from typing import List
-from urllib.parse import quote
+from typing import List, Optional
+from urllib.parse import quote, unquote
 
 from app.core.config import settings
 from app.core.telemetry.otel_setup import trace_drive_call
@@ -17,7 +17,19 @@ _SELECT = "id,name,size,file,folder,webUrl,parentReference,lastModifiedDateTime,
 
 
 def _root_prefix() -> str:
-    return f"/drive/root:/{settings.ONEDRIVE_ROOT_FOLDER.strip('/')}"
+    return "/" + settings.ONEDRIVE_ROOT_FOLDER.strip("/")
+
+
+def _drive_relative(parent_path: str) -> Optional[str]:
+    """'/drive/root:/A/B' (personal) or '/drives/{id}/root:/A/B' (business) -> '/A/B'.
+
+    Graph may percent-encode the path; None when it is not under the drive root.
+    """
+    marker = parent_path.find("root:")
+    if marker == -1:
+        return None
+    rest = unquote(parent_path[marker + len("root:"):])
+    return rest if rest.startswith("/") else "/" + rest
 
 
 class OneDriveConnector:
@@ -73,13 +85,15 @@ class OneDriveConnector:
         raw = res.json()
         if "deleted" in raw:
             raise NotFoundError("OneDrive item was deleted")
-        parent = (raw.get("parentReference") or {}).get("path", "")
-        prefix = _root_prefix()
-        if "folder" in raw and parent == "/drive/root:" and raw.get("name", "").lower() == settings.ONEDRIVE_ROOT_FOLDER.strip("/").lower():
+        parent = _drive_relative((raw.get("parentReference") or {}).get("path", ""))
+        prefix = _root_prefix().lower()
+        if parent is None:
+            raise NotFoundError(f"The file is not inside the '{settings.ONEDRIVE_ROOT_FOLDER}' folder")
+        if "folder" in raw and (parent.rstrip("/") + "/" + raw.get("name", "")).lower() == prefix:
             root = self._item(raw, "/")
             root.name = ""
             return root
-        if parent.lower() != prefix.lower() and not parent.lower().startswith(prefix.lower() + "/"):
+        if parent.lower() != prefix and not parent.lower().startswith(prefix + "/"):
             raise NotFoundError(f"The file is not inside the '{settings.ONEDRIVE_ROOT_FOLDER}' folder")
         return self._item(raw, parent[len(prefix):] or "/")
 
