@@ -50,7 +50,10 @@ async def test_forged_token_with_other_secret_is_rejected(client):
 VERIFIER = "v" * 64
 
 
-@pytest.mark.parametrize("path", ["/api/auth/callback", "/api/auth/google/callback"])
+@pytest.mark.parametrize("path", [
+    # "/api/auth/callback",  # Microsoft sign-in is turned off
+    "/api/auth/google/callback",
+])
 async def test_oauth_callback_rejects_missing_or_forged_state(client, path):
     assert (await client.get(path, params={"code": "mock_dev_code_123"})).status_code == 405  # POST only
     assert (await client.post(path, json={"code": "mock_dev_code_123"})).status_code == 422
@@ -94,35 +97,90 @@ async def _sign_in(client, provider, link_headers=None):
     return await client.post(callback, json={"code": "c", "state": start["state"], "code_verifier": start["code_verifier"]})
 
 
-async def test_unverified_email_cannot_capture_a_verified_sign_in(client, monkeypatch):
-    """Pre-hijack: an outside Microsoft tenant sets `mail` to the victim's address and signs in first."""
-    from app.services.oauth import OAuthProfile
-
-    _fake_provider(monkeypatch, "microsoft", OAuthProfile("attacker-oid", "victim@gmail.com", "Mallory", False))
-    _fake_provider(monkeypatch, "google", OAuthProfile("victim-sub", "victim@gmail.com", "Victim", True))
-    assert (await _sign_in(client, "microsoft")).status_code == 200
-    res = await _sign_in(client, "google")
-    assert res.status_code == 409  # never linked to the account created from the unverified address
+async def test_google_sign_in_creates_a_verified_user_and_signs_back_in(client, monkeypatch):
     from sqlalchemy import select
 
     from app.db.database import AsyncSessionLocal
-    from app.models.user import OAuthAccount
-
-    async with AsyncSessionLocal() as s:
-        assert (await s.execute(select(OAuthAccount.provider))).scalars().all() == ["microsoft"]
-
-
-async def test_signed_in_users_can_connect_their_second_drive(client, monkeypatch):
+    from app.models.user import OAuthAccount, User
     from app.services.oauth import OAuthProfile
 
-    _fake_provider(monkeypatch, "microsoft", OAuthProfile("oid-1", "ana@contoso.example", "Ana", False))
-    _fake_provider(monkeypatch, "google", OAuthProfile("sub-1", "ana.personal@gmail.com", "Ana", True))
-    first = (await _sign_in(client, "microsoft")).json()
+    _fake_provider(monkeypatch, "google", OAuthProfile("sub-1", "ana@gmail.com", "Ana", True))
+    first = await _sign_in(client, "google")
+    assert first.status_code == 200
+    user_id = first.json()["user"]["id"]
+    assert (await _sign_in(client, "google")).json()["user"]["id"] == user_id
+    async with AsyncSessionLocal() as s:
+        user = await s.get(User, user_id)
+        assert user.email_verified and user.google_id == "sub-1" and user.microsoft_id is None
+        assert (await s.execute(select(OAuthAccount.provider))).scalars().all() == ["google"]
+
+
+async def test_reconnecting_with_a_different_account_is_refused(client, monkeypatch):
+    """Reconnect must not swap accounts: the next sync would purge the original account's documents."""
+    from sqlalchemy import select
+
+    from app.db.database import AsyncSessionLocal
+    from app.models.user import OAuthAccount, User
+    from app.services.oauth import OAuthProfile
+
+    async def stored_token(user_id):
+        async with AsyncSessionLocal() as s:
+            account = (await s.execute(select(OAuthAccount).where(OAuthAccount.user_id == user_id))).scalar_one()
+            return (await s.get(User, user_id)).google_id, account.encrypted_access_token
+
+    _fake_provider(monkeypatch, "google", OAuthProfile("sub-1", "ana@gmail.com", "Ana", True))
+    first = (await _sign_in(client, "google")).json()
     headers = {"Authorization": f"Bearer {first['token']}"}
-    linked = await _sign_in(client, "google", link_headers=headers)
-    assert linked.status_code == 200
-    me = linked.json()["user"]
-    assert me["id"] == first["user"]["id"] and me["onedrive_connected"] and me["gdrive_connected"]
+    user_id = first["user"]["id"]
+    before = await stored_token(user_id)
+
+    _fake_provider(monkeypatch, "google", OAuthProfile("sub-2", "ana.work@gmail.com", "Ana", True))
+    res = await _sign_in(client, "google", link_headers=headers)
+    assert res.status_code == 409 and "ana@gmail.com" in res.json()["detail"]
+    assert await stored_token(user_id) == before  # identity and tokens untouched
+
+    _fake_provider(monkeypatch, "google", OAuthProfile("sub-1", "ana@gmail.com", "Ana", True))
+    assert (await _sign_in(client, "google", link_headers=headers)).status_code == 200  # same account: reconnects
+    google_id, token = await stored_token(user_id)
+    assert google_id == "sub-1" and token != before[1]
+
+
+async def test_microsoft_sign_in_is_turned_off(client):
+    assert (await client.get("/api/auth/login")).status_code == 404
+    callback = {"code": "c", "state": "s", "code_verifier": VERIFIER}
+    assert (await client.post("/api/auth/callback", json=callback)).status_code == 404
+
+
+# Microsoft sign-in is turned off: only Google sign-in is used.
+# async def test_unverified_email_cannot_capture_a_verified_sign_in(client, monkeypatch):
+#     """Pre-hijack: an outside Microsoft tenant sets `mail` to the victim's address and signs in first."""
+#     from app.services.oauth import OAuthProfile
+#
+#     _fake_provider(monkeypatch, "microsoft", OAuthProfile("attacker-oid", "victim@gmail.com", "Mallory", False))
+#     _fake_provider(monkeypatch, "google", OAuthProfile("victim-sub", "victim@gmail.com", "Victim", True))
+#     assert (await _sign_in(client, "microsoft")).status_code == 200
+#     res = await _sign_in(client, "google")
+#     assert res.status_code == 409  # never linked to the account created from the unverified address
+#     from sqlalchemy import select
+#
+#     from app.db.database import AsyncSessionLocal
+#     from app.models.user import OAuthAccount
+#
+#     async with AsyncSessionLocal() as s:
+#         assert (await s.execute(select(OAuthAccount.provider))).scalars().all() == ["microsoft"]
+#
+#
+# async def test_signed_in_users_can_connect_their_second_drive(client, monkeypatch):
+#     from app.services.oauth import OAuthProfile
+#
+#     _fake_provider(monkeypatch, "microsoft", OAuthProfile("oid-1", "ana@contoso.example", "Ana", False))
+#     _fake_provider(monkeypatch, "google", OAuthProfile("sub-1", "ana.personal@gmail.com", "Ana", True))
+#     first = (await _sign_in(client, "microsoft")).json()
+#     headers = {"Authorization": f"Bearer {first['token']}"}
+#     linked = await _sign_in(client, "google", link_headers=headers)
+#     assert linked.status_code == 200
+#     me = linked.json()["user"]
+#     assert me["id"] == first["user"]["id"] and me["onedrive_connected"] and me["gdrive_connected"]
 
 
 async def test_sandbox_login_is_disabled_outside_sandbox_mode(client, monkeypatch):

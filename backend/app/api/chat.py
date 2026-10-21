@@ -16,7 +16,7 @@ from app.core.config import settings
 from app.core.telemetry.langfuse_client import log_score, rag_trace
 from app.core.telemetry.otel_setup import get_current_trace_id
 from app.db.database import AsyncSessionLocal, get_db, utcnow
-from app.models.chat import ChatMessage, ChatSession
+from app.models.chat import ChatMessage, ChatQuestion, ChatSession
 from app.models.user import User
 from app.services import rag_service
 
@@ -60,10 +60,10 @@ async def _enforce_rate_limit(db: AsyncSession, user_id: str) -> None:
         return
     now = utcnow()
     minute_ago = now - timedelta(minutes=1)
+    # Counted from chat_questions, not chat_messages: deleting chats must not reset the limits.
     last_minute, last_day = (await db.execute(
-        select(func.count().filter(ChatMessage.created_at > minute_ago), func.count())
-        .where(ChatMessage.user_id == user_id, ChatMessage.role == "user",
-               ChatMessage.created_at > now - timedelta(days=1))
+        select(func.count().filter(ChatQuestion.created_at > minute_ago), func.count())
+        .where(ChatQuestion.user_id == user_id, ChatQuestion.created_at > now - timedelta(days=1))
     )).one()
     if per_minute > 0 and last_minute >= per_minute:
         raise HTTPException(status_code=429, detail="You are asking questions too quickly. Wait a minute and try again.",
@@ -95,6 +95,10 @@ async def stream_chat(req: ChatStreamRequest, db: AsyncSession = Depends(get_db)
         if history and history[0]["role"] == "assistant":
             history = history[1:]  # start the window on a user turn
     db.add(ChatMessage(session_id=session.id, user_id=user.id, role="user", content=req.query))
+    db.add(ChatQuestion(user_id=user.id))
+    # Only the last day counts toward the limits; older entries are dropped as the user asks.
+    await db.execute(delete(ChatQuestion).where(ChatQuestion.user_id == user.id,
+                                                ChatQuestion.created_at < utcnow() - timedelta(days=1)))
     session.updated_at = utcnow()
     await db.commit()
 

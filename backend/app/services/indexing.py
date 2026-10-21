@@ -22,6 +22,13 @@ from app.services.ocr_service import OCRError, ocr_document, ocr_enabled, ocr_sc
 
 logger = logging.getLogger(__name__)
 
+# Start of the note an indexed document gets when a newer version failed (see _failed).
+_PREVIOUS_VERSION_NOTE = "The latest version could not be indexed"
+
+
+class ParseTimeoutError(Exception):
+    """Reading the file took longer than PARSE_TIMEOUT_SECONDS: a transient failure, retried on the next sync."""
+
 
 @dataclass
 class IndexResult:
@@ -80,7 +87,7 @@ async def _parse(data: bytes, item: DriveItem) -> ParsedDocument:
         parsed = await asyncio.wait_for(asyncio.to_thread(parse_document, data, item.name, item.mime_type),
                                         timeout=settings.PARSE_TIMEOUT_SECONDS)
     except TimeoutError as exc:
-        raise UnsupportedDocumentError("The file took too long to read") from exc
+        raise ParseTimeoutError("The file took too long to read") from exc
     except UnsupportedDocumentError as exc:
         if not (exc.needs_ocr and ocr_enabled()):
             raise
@@ -106,16 +113,22 @@ async def index_file(user_id: str, item: DriveItem, data: bytes) -> IndexResult:
 
     async with AsyncSessionLocal() as session:
         existing = (await session.execute(
-            select(Document.id, Document.filename, Document.content_hash, Document.index_version, Document.status)
+            select(Document.id, Document.filename, Document.content_hash, Document.index_version, Document.status,
+                   Document.error_message)
             .where(*_key(item, user_id))
         )).one_or_none()
         if existing and existing.content_hash == content_hash and existing.index_version == version and existing.status == INDEXED:
-            # Same bytes, same pipeline: refresh metadata (rename/move/link) without re-embedding.
+            # Same bytes, same pipeline: refresh metadata (rename/move/link) without re-embedding. The parse
+            # warnings still describe the indexed content; only a note about a failed newer version is stale.
             if existing.filename != item.name:
                 await _rename_contexts(session, existing.id, existing.filename, item.name)
+            warnings = existing.error_message
+            if warnings and warnings.startswith(_PREVIOUS_VERSION_NOTE):
+                warnings = None
             await session.execute(update(Document).where(Document.id == existing.id).values(
                 filename=item.name[:1000], folder_path=item.folder_path[:2000], onedrive_url=item.web_url,
-                modified_date=item.modified_date, file_size=item.size or None, error_message=None, updated_at=utcnow(),
+                modified_date=item.modified_date, file_size=item.size or None, error_message=warnings,
+                updated_at=utcnow(),
             ))
             await session.commit()
             return IndexResult("UNCHANGED")
@@ -123,6 +136,9 @@ async def index_file(user_id: str, item: DriveItem, data: bytes) -> IndexResult:
 
     try:
         parsed = await _parse(data, item)
+    except ParseTimeoutError as exc:  # a slow file is not an unreadable one: keep its last version, retry later
+        logger.warning("Parsing %s timed out after %ss", item.name, settings.PARSE_TIMEOUT_SECONDS)
+        return await _failed(user_id, item, keep_previous, str(exc))
     except UnsupportedDocumentError as exc:
         await record_failure(user_id, item, UNSUPPORTED, exc.reason, content_hash, unsupported_version())
         return IndexResult(UNSUPPORTED, reason=exc.reason)
@@ -194,7 +210,7 @@ async def _failed(user_id: str, item: DriveItem, keep_previous: bool, reason: st
     if keep_previous:
         async with AsyncSessionLocal() as session:
             await session.execute(update(Document).where(*_key(item, user_id)).values(
-                error_message=f"The latest version could not be indexed ({reason}); answers use the previous version."[:2000],
+                error_message=f"{_PREVIOUS_VERSION_NOTE} ({reason}); answers use the previous version."[:2000],
                 updated_at=utcnow(),
             ))
             await session.commit()

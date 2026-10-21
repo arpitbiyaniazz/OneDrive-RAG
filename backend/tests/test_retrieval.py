@@ -84,6 +84,27 @@ async def test_follow_up_without_llm_keeps_the_question():
     assert plan.search_query == "and sick leave?"  # mock LLM returns {}: graceful fallback
 
 
+@pytest.mark.parametrize("reply", [
+    {"target_documents": True},
+    {"target_documents": 3},
+    {"target_documents": "Leave Policy 2026.pdf"},
+    {"target_documents": [None, 7, {"x": 1}]},
+    {"intent": ["summarize"]},
+    {"intent": {"name": "summarize"}},
+    {"standalone_query": 42, "intent": None, "target_documents": None},
+])
+async def test_malformed_rewrite_replies_are_ignored(monkeypatch, reply):
+    from app.services import query_engine
+
+    async def rewrite(*args):
+        return reply
+
+    monkeypatch.setattr(query_engine, "_llm_rewrite", rewrite)
+    history = [{"role": "user", "content": "What is the leave policy?"}, {"role": "assistant", "content": "18 days [1]"}]
+    plan = await plan_query("and sick leave?", history, [])
+    assert plan.intent == DOCUMENT_QUESTION and plan.search_query == "and sick leave?" and plan.target_document_ids == []
+
+
 async def test_long_documents_are_summarized_part_by_part(monkeypatch):
     from app.core.config import settings
     from app.services import rag_service

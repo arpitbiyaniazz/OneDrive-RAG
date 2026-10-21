@@ -315,9 +315,11 @@ export function FolderTree({ onIndexSelection, isIndexing = false, initialDrive 
     );
   }
 
-  const provider = driveType === 'google_drive' ? 'google' : 'microsoft';
+  // const provider = driveType === 'google_drive' ? 'google' : 'microsoft';  // Microsoft sign-in is turned off
   const driveLabel = driveType === 'google_drive' ? 'Google Drive' : 'OneDrive';
   const notConnected = error?.code === 'drive_not_connected';
+  // OneDrive is connected through Microsoft sign-in, which is turned off: only Google Drive can be connected.
+  const microsoftSignInOff = notConnected && driveType === 'onedrive';
 
   return (
     <div className="glass-panel" style={{ padding: 'clamp(1rem, 4vw, 1.75rem)' }}>
@@ -491,12 +493,16 @@ export function FolderTree({ onIndexSelection, isIndexing = false, initialDrive 
           </div>
         ) : error ? (
           <div style={{ textAlign: 'center', padding: '2.5rem 1rem', color: 'var(--text-secondary)' }}>
-            <p style={{ marginBottom: '1rem' }}>{error.message || (notConnected ? `${driveLabel} is not connected yet.` : 'Could not load this drive.')}</p>
-            {notConnected && (
+            <p style={{ marginBottom: '1rem' }}>
+              {microsoftSignInOff
+                ? 'OneDrive is not available: Microsoft sign-in is turned off. Use Google Drive.'
+                : error.message || (notConnected ? `${driveLabel} is not connected yet.` : 'Could not load this drive.')}
+            </p>
+            {notConnected && !microsoftSignInOff && (
               <button
                 type="button"
                 className="btn btn-primary"
-                onClick={() => startOAuth(provider).catch((e) => setSubmitError((e as Error).message))}
+                onClick={() => startOAuth('google').catch((e) => setSubmitError((e as Error).message))}
               >
                 <Link2 size={14} /> Connect {driveLabel}
               </button>

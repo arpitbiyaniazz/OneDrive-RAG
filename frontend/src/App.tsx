@@ -122,10 +122,12 @@ export function App() {
         const code = params.get('code');
         const providerError = params.get('error_description') || params.get('error');
         if (code || providerError) {
-          // OAuth redirect back from Microsoft (/auth/callback) or Google (/auth/google/callback)
-          const provider: OAuthProvider = window.location.pathname.includes('google') ? 'google' : 'microsoft';
+          // OAuth redirect back from Google (/auth/google/callback). Microsoft sign-in (/auth/callback) is turned off:
+          // const provider: OAuthProvider = window.location.pathname.includes('google') ? 'google' : 'microsoft';
+          const provider: OAuthProvider = 'google';
           // Already signed in: this round trip connected a drive from the drive browser.
-          if (hasSessionToken()) connectedDrive = provider === 'google' ? 'google_drive' : 'onedrive';
+          // if (hasSessionToken()) connectedDrive = provider === 'google' ? 'google_drive' : 'onedrive';
+          if (hasSessionToken()) connectedDrive = 'google_drive';
           window.history.replaceState({}, document.title, '/');
           if (providerError) {
             oauthError = providerError;

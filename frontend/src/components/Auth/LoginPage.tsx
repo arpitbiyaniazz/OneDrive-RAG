@@ -31,7 +31,7 @@ export function LoginPage({
   theme = 'dark',
   onToggleTheme,
 }: LoginPageProps) {
-  const [loading, setLoading] = useState<'microsoft' | 'google' | 'sandbox' | null>(null);
+  const [loading, setLoading] = useState<'google' | 'sandbox' | null>(null); // 'microsoft': sign-in turned off
   const [errorMessage, setErrorMessage] = useState<string | null>(initialError);
 
   // e.g. "session expired" arriving while this page is already shown
@@ -39,7 +39,7 @@ export function LoginPage({
     setErrorMessage(initialError);
   }, [initialError]);
 
-  async function handleOAuth(provider: 'microsoft' | 'google') {
+  async function handleOAuth(provider: 'google') { // 'microsoft': sign-in turned off
     try {
       setLoading(provider);
       setErrorMessage(null);
@@ -50,7 +50,7 @@ export function LoginPage({
     }
   }
 
-  const handleMicrosoftLogin = () => handleOAuth('microsoft');
+  // const handleMicrosoftLogin = () => handleOAuth('microsoft');  // Microsoft sign-in is turned off
   const handleGoogleLogin = () => handleOAuth('google');
 
   async function handleSandboxLogin() {
@@ -313,7 +313,7 @@ export function LoginPage({
               Sign In to Your Workspace
             </h2>
             <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-              Sign in with Microsoft or Google. You can connect the other drive later.
+              Sign in with your Google account.
             </p>
           </div>
 
@@ -338,7 +338,7 @@ export function LoginPage({
             </div>
           )}
 
-          {/* Primary Action: Microsoft OAuth */}
+          {/* Microsoft sign-in is turned off: only Google sign-in is used.
           <button
             onClick={handleMicrosoftLogin}
             disabled={loading !== null}
@@ -371,7 +371,7 @@ export function LoginPage({
               e.currentTarget.style.transform = 'translateY(0)';
             }}
           >
-            {/* Microsoft 4-Color Logo */}
+            Microsoft 4-Color Logo
             <svg width="20" height="20" viewBox="0 0 21 21" fill="none" xmlns="http://www.w3.org/2000/svg">
               <rect x="1" y="1" width="9" height="9" fill="#f25022" />
               <rect x="11" y="1" width="9" height="9" fill="#7fba00" />
@@ -383,8 +383,9 @@ export function LoginPage({
             </span>
             <ExternalLink size={15} style={{ opacity: 0.6, marginLeft: 'auto' }} />
           </button>
+          */}
 
-          {/* Secondary Action: Google Workspace OAuth */}
+          {/* Primary Action: Google OAuth */}
           <button
             onClick={handleGoogleLogin}
             disabled={loading !== null}

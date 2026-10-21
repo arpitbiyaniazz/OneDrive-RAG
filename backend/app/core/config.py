@@ -19,11 +19,11 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: Literal["text", "json"] = "text"
 
-    # Microsoft Graph / OAuth 2.0
-    MICROSOFT_CLIENT_ID: str = ""
-    MICROSOFT_CLIENT_SECRET: str = ""
-    MICROSOFT_TENANT_ID: str = "common"
-    MICROSOFT_REDIRECT_URI: str = "http://localhost:5173/auth/callback"
+    # Microsoft Graph / OAuth 2.0: Microsoft sign-in is turned off, only Google sign-in is used
+    # MICROSOFT_CLIENT_ID: str = ""
+    # MICROSOFT_CLIENT_SECRET: str = ""
+    # MICROSOFT_TENANT_ID: str = "common"
+    # MICROSOFT_REDIRECT_URI: str = "http://localhost:5173/auth/callback"
     ONEDRIVE_ROOT_FOLDER: str = "OneDrive-RAG"
 
     # Google Drive / OAuth 2.0

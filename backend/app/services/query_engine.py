@@ -295,13 +295,16 @@ async def plan_query(query: str, history: List[Dict[str, str]], catalog: List[Ca
     if isinstance(standalone, str) and 0 < len(standalone.strip()) <= 1000:
         plan.search_query = standalone.strip()
         plan.rewritten = plan.search_query != query
+    # The model's JSON is untrusted: a field of the wrong type is ignored rather than failing the question.
     intent = data.get("intent")
-    if intent in INTENTS:
+    if isinstance(intent, str) and intent in INTENTS:
         plan.intent = intent
     by_title: Dict[str, str] = {}
     for entry in catalog:  # newest first: duplicate titles resolve to the newest copy
         by_title.setdefault(entry.filename.lower(), entry.id)
-    named = [by_title[t.lower()] for t in data.get("target_documents") or [] if isinstance(t, str) and t.lower() in by_title]
+    titles = data.get("target_documents")
+    titles = [t for t in titles if isinstance(t, str)] if isinstance(titles, list) else []
+    named = [by_title[t.lower()] for t in titles if t.lower() in by_title]
     if named:
         plan.target_document_ids = list(dict.fromkeys(named + plan.target_document_ids))[:3]
     else:

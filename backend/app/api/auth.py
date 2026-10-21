@@ -108,6 +108,16 @@ async def _resolve_user(db: AsyncSession, provider_name: str, profile: OAuthProf
         user = await db.get(User, link_user_id)
         if user is None:
             raise HTTPException(status_code=400, detail="Sign-in session expired. Please try again.")
+        current = getattr(user, id_attr)
+        if current and current != profile.subject:
+            # Reconnecting must not swap in another account: its tokens would replace the user's, and the
+            # next sync would purge every document of the original account as "no longer in the drive".
+            provider_label = "Google" if provider_name == "google" else "Microsoft"
+            raise HTTPException(
+                status_code=409,
+                detail=f"This {provider_label} account is not the one you signed in with ({user.email}). "
+                       f"Reconnect with that account, or sign out and sign in with the other one.",
+            )
         setattr(user, id_attr, profile.subject)
         return user
 
@@ -162,10 +172,11 @@ async def _callback(provider_name: str, body: OAuthCallback, db: AsyncSession) -
     return await _session(db, user)
 
 
-@router.get("/login")
-async def microsoft_login(user: Optional[User] = Depends(get_optional_user)):
-    """Microsoft authorization URL. With a session token, the account is linked to the current user."""
-    return _login_url("microsoft", user)
+# Microsoft sign-in is turned off: only Google sign-in is used (see MicrosoftOAuth in app/services/oauth.py).
+# @router.get("/login")
+# async def microsoft_login(user: Optional[User] = Depends(get_optional_user)):
+#     """Microsoft authorization URL. With a session token, the account is linked to the current user."""
+#     return _login_url("microsoft", user)
 
 
 @router.get("/google/login")
@@ -173,10 +184,11 @@ async def google_login(user: Optional[User] = Depends(get_optional_user)):
     return _login_url("google", user)
 
 
-@router.post("/callback")
-async def microsoft_callback(body: OAuthCallback, db: AsyncSession = Depends(get_db)):
-    """Completes Microsoft sign-in: the SPA posts the code and state from the redirect plus its PKCE verifier."""
-    return await _callback("microsoft", body, db)
+# Microsoft sign-in is turned off: only Google sign-in is used.
+# @router.post("/callback")
+# async def microsoft_callback(body: OAuthCallback, db: AsyncSession = Depends(get_db)):
+#     """Completes Microsoft sign-in: the SPA posts the code and state from the redirect plus its PKCE verifier."""
+#     return await _callback("microsoft", body, db)
 
 
 @router.post("/google/callback")

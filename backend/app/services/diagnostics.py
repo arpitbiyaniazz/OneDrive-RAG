@@ -92,7 +92,8 @@ async def check_embeddings() -> Check:
 def check_configuration() -> List[Check]:
     checks = []
     for name, configured, uri in (
-        ("Microsoft sign-in", bool(settings.MICROSOFT_CLIENT_ID and settings.MICROSOFT_CLIENT_SECRET), settings.MICROSOFT_REDIRECT_URI),
+        # Microsoft sign-in is turned off: only Google sign-in is used.
+        # ("Microsoft sign-in", bool(settings.MICROSOFT_CLIENT_ID and settings.MICROSOFT_CLIENT_SECRET), settings.MICROSOFT_REDIRECT_URI),
         ("Google sign-in", bool(settings.GOOGLE_CLIENT_ID and settings.GOOGLE_CLIENT_SECRET), settings.GOOGLE_REDIRECT_URI),
     ):
         checks.append(Check(name, configured, f"redirect URI {uri}" if configured else "not configured", required=False))

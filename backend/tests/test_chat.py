@@ -108,6 +108,19 @@ async def test_questions_are_rate_limited_per_user(client, auth_headers, monkeyp
     assert res.status_code == 429 and res.headers["Retry-After"] == "60"
 
 
+async def test_deleting_chats_does_not_reset_the_daily_limit(client, auth_headers, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "CHAT_RATE_LIMIT_PER_MINUTE", 0)
+    monkeypatch.setattr(settings, "CHAT_RATE_LIMIT_PER_DAY", 2)
+    for _ in range(2):
+        assert (await client.post("/api/chat/stream", headers=auth_headers, json={"query": "hello"})).status_code == 200
+    for session in (await client.get("/api/chat/sessions", headers=auth_headers)).json()["sessions"]:
+        assert (await client.delete(f"/api/chat/sessions/{session['id']}", headers=auth_headers)).status_code == 200
+    res = await client.post("/api/chat/stream", headers=auth_headers, json={"query": "hello"})
+    assert res.status_code == 429 and res.headers["Retry-After"] == "3600"
+
+
 async def test_an_empty_model_answer_is_reported(client, auth_headers, monkeypatch):
     async def silent(self, messages, **kwargs):
         return

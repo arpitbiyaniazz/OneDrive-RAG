@@ -56,7 +56,9 @@ npm install && npm run dev           # UI on http://localhost:5173 (proxies /api
 Without OAuth apps, set `DEV_MOCK_ONEDRIVE=true` / `DEV_MOCK_GDRIVE=true` to use sandbox drives with sample
 files (development only; production refuses to start with them).
 
-Drive setup: [docs/AZURE_SETUP.md](docs/AZURE_SETUP.md), [docs/GOOGLE_SETUP.md](docs/GOOGLE_SETUP.md).
+Drive setup: [docs/GOOGLE_SETUP.md](docs/GOOGLE_SETUP.md). Sign-in is Google only: Microsoft sign-in (and with it
+connecting a live OneDrive) is commented out in `app/services/oauth.py`, `app/api/auth.py` and the login page;
+[docs/AZURE_SETUP.md](docs/AZURE_SETUP.md) describes the setup needed to turn it back on.
 Put the documents to index in a top-level folder named `OneDrive-RAG` (configurable).
 
 ## Run the full stack in containers

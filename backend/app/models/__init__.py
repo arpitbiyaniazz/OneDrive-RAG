@@ -1,4 +1,4 @@
-from app.models.chat import ChatMessage, ChatSession
+from app.models.chat import ChatMessage, ChatQuestion, ChatSession
 from app.models.chunk import DocumentChunk
 from app.models.document import Document
 from app.models.ingestion_job import IngestionJob
@@ -14,4 +14,5 @@ __all__ = [
     "TrackedFolder",
     "ChatSession",
     "ChatMessage",
+    "ChatQuestion",
 ]

@@ -175,6 +175,71 @@ async def test_a_failed_reindex_keeps_serving_the_previous_version(client, auth_
     assert "$90" in res.text
 
 
+def _slow_parsing(monkeypatch):
+    import time
+
+    from app.core.config import settings
+    from app.services import indexing
+
+    real_parse = indexing.parse_document
+
+    def slow(*args):
+        time.sleep(0.3)
+        return real_parse(*args)
+
+    monkeypatch.setattr(indexing, "parse_document", slow)
+    monkeypatch.setattr(settings, "PARSE_TIMEOUT_SECONDS", 0.05)
+
+
+async def test_a_parse_timeout_keeps_the_previous_version_and_is_retried(client, auth_headers, monkeypatch):
+    await _ingest(client, auth_headers, [{"id": "file_fin_expense", "drive_type": "onedrive"}])
+    sandbox_onedrive.set_content("file_fin_expense", b"Meals are now reimbursed up to $90 per day.")
+    _slow_parsing(monkeypatch)
+    assert (await _sync(client, auth_headers))["result"]["summary"] == {"failed": 1}
+    doc = (await _docs(client, auth_headers))["Expense Policy.txt"]
+    assert doc["status"] == "INDEXED" and doc["chunk_count"] > 0 and "took too long" in doc["error_message"]
+
+    monkeypatch.undo()
+    assert (await _sync(client, auth_headers))["result"]["summary"] == {"indexed": 1}
+
+
+async def test_a_new_file_that_times_out_is_retried_not_marked_unsupported(client, auth_headers, monkeypatch):
+    _slow_parsing(monkeypatch)
+    await _ingest(client, auth_headers, [{"id": "file_fin_expense", "drive_type": "onedrive"}])
+    assert (await _docs(client, auth_headers))["Expense Policy.txt"]["status"] == "FAILED"
+
+    monkeypatch.undo()
+    assert (await _sync(client, auth_headers))["result"]["summary"] == {"indexed": 1}
+
+
+async def test_renames_keep_the_parse_warnings(client, auth_headers, monkeypatch):
+    from app.core.config import settings
+
+    notes = "\n\n".join(f"Meeting {n}. The team reviewed milestone M-{n:03d} and agreed on next steps. " * 8
+                        for n in range(1, 40))
+    sandbox_onedrive.add_file("file_notes", "Meeting Notes.txt", "root", notes.encode())
+    monkeypatch.setattr(settings, "MAX_CHUNKS_PER_DOCUMENT", 2)
+    await _ingest(client, auth_headers, [{"id": "file_notes", "drive_type": "onedrive"}])
+    warning = (await _docs(client, auth_headers))["Meeting Notes.txt"]["error_message"]
+    assert warning and "passages were indexed" in warning
+    sandbox_onedrive.rename("file_notes", "Meeting Notes 2026.txt")
+    assert (await _sync(client, auth_headers))["result"]["summary"] == {"unchanged": 1}
+    assert (await _docs(client, auth_headers))["Meeting Notes 2026.txt"]["error_message"] == warning
+
+
+async def test_the_previous_version_note_clears_when_the_file_is_restored(client, auth_headers, monkeypatch):
+    await _ingest(client, auth_headers, [{"id": "file_fin_expense", "drive_type": "onedrive"}])
+    original = await sandbox_onedrive.download("sandbox", await sandbox_onedrive.get_file("sandbox", "file_fin_expense"))
+    sandbox_onedrive.set_content("file_fin_expense", b"Meals are now reimbursed up to $90 per day.")
+    _slow_parsing(monkeypatch)
+    assert (await _sync(client, auth_headers))["result"]["summary"] == {"failed": 1}
+
+    monkeypatch.undo()
+    sandbox_onedrive.set_content("file_fin_expense", original)  # back to the indexed bytes
+    assert (await _sync(client, auth_headers))["result"]["summary"] == {"unchanged": 1}
+    assert (await _docs(client, auth_headers))["Expense Policy.txt"]["error_message"] is None
+
+
 async def test_renames_update_the_document_header_without_reembedding(client, auth_headers):
     await _ingest(client, auth_headers, [{"id": "file_fin_expense", "drive_type": "onedrive"}])
     sandbox_onedrive.rename("file_fin_expense", "Travel and Expense Policy.txt")

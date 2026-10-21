@@ -1,4 +1,4 @@
-"""OAuth 2.0 authorization-code + PKCE flows for Microsoft Entra ID and Google."""
+"""OAuth 2.0 authorization-code + PKCE flow for Google (Microsoft Entra ID sign-in is commented out)."""
 import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -87,45 +87,48 @@ class OAuthProvider:
     async def profile(self, access_token: str) -> OAuthProfile: ...
 
 
-class MicrosoftOAuth(OAuthProvider):
-    name = "Microsoft"
-    # Files.Read covers the signed-in user's own OneDrive, which is all the app reads.
-    scopes = ["openid", "profile", "email", "offline_access", "User.Read", "Files.Read"]
-
-    @property
-    def authorize_url(self) -> str:
-        return f"https://login.microsoftonline.com/{settings.MICROSOFT_TENANT_ID}/oauth2/v2.0/authorize"
-
-    @property
-    def token_url(self) -> str:
-        return f"https://login.microsoftonline.com/{settings.MICROSOFT_TENANT_ID}/oauth2/v2.0/token"
-
-    @property
-    def client_id(self) -> str:
-        return settings.MICROSOFT_CLIENT_ID
-
-    @property
-    def client_secret(self) -> str:
-        return settings.MICROSOFT_CLIENT_SECRET
-
-    @property
-    def redirect_uri(self) -> str:
-        return settings.MICROSOFT_REDIRECT_URI
-
-    def extra_auth_params(self) -> Dict[str, str]:
-        return {"response_mode": "query"}
-
-    async def _token_request(self, data: Dict[str, str]) -> Dict[str, Any]:
-        return await super()._token_request({**data, "scope": " ".join(self.scopes)})
-
-    async def profile(self, access_token: str) -> OAuthProfile:
-        res = await self._send("GET", "https://graph.microsoft.com/v1.0/me", headers={"Authorization": f"Bearer {access_token}"})
-        if res.status_code != 200:
-            raise ConnectorError("Could not read the Microsoft profile")
-        data = res.json()
-        email = data.get("mail") or data.get("userPrincipalName") or ""
-        # Graph's mail attribute is not verified by Microsoft, so it is never used to link accounts.
-        return OAuthProfile(subject=data["id"], email=email.lower(), name=data.get("displayName") or "", email_verified=False)
+# Microsoft sign-in is turned off: only Google sign-in is used. To turn it back on, uncomment this class,
+# its PROVIDERS entry below, the MICROSOFT_* settings, the /auth/login and /auth/callback routes in
+# app/api/auth.py and the Microsoft button in the frontend.
+# class MicrosoftOAuth(OAuthProvider):
+#     name = "Microsoft"
+#     # Files.Read covers the signed-in user's own OneDrive, which is all the app reads.
+#     scopes = ["openid", "profile", "email", "offline_access", "User.Read", "Files.Read"]
+#
+#     @property
+#     def authorize_url(self) -> str:
+#         return f"https://login.microsoftonline.com/{settings.MICROSOFT_TENANT_ID}/oauth2/v2.0/authorize"
+#
+#     @property
+#     def token_url(self) -> str:
+#         return f"https://login.microsoftonline.com/{settings.MICROSOFT_TENANT_ID}/oauth2/v2.0/token"
+#
+#     @property
+#     def client_id(self) -> str:
+#         return settings.MICROSOFT_CLIENT_ID
+#
+#     @property
+#     def client_secret(self) -> str:
+#         return settings.MICROSOFT_CLIENT_SECRET
+#
+#     @property
+#     def redirect_uri(self) -> str:
+#         return settings.MICROSOFT_REDIRECT_URI
+#
+#     def extra_auth_params(self) -> Dict[str, str]:
+#         return {"response_mode": "query"}
+#
+#     async def _token_request(self, data: Dict[str, str]) -> Dict[str, Any]:
+#         return await super()._token_request({**data, "scope": " ".join(self.scopes)})
+#
+#     async def profile(self, access_token: str) -> OAuthProfile:
+#         res = await self._send("GET", "https://graph.microsoft.com/v1.0/me", headers={"Authorization": f"Bearer {access_token}"})
+#         if res.status_code != 200:
+#             raise ConnectorError("Could not read the Microsoft profile")
+#         data = res.json()
+#         email = data.get("mail") or data.get("userPrincipalName") or ""
+#         # Graph's mail attribute is not verified by Microsoft, so it is never used to link accounts.
+#         return OAuthProfile(subject=data["id"], email=email.lower(), name=data.get("displayName") or "", email_verified=False)
 
 
 class GoogleOAuth(OAuthProvider):
@@ -166,7 +169,10 @@ class GoogleOAuth(OAuthProvider):
                             name=data.get("name") or "", email_verified=bool(data.get("email_verified")))
 
 
-PROVIDERS: Dict[str, OAuthProvider] = {"microsoft": MicrosoftOAuth(), "google": GoogleOAuth()}
+PROVIDERS: Dict[str, OAuthProvider] = {
+    # "microsoft": MicrosoftOAuth(),  # Microsoft sign-in is turned off
+    "google": GoogleOAuth(),
+}
 
 
 def get_provider(name: str) -> Optional[OAuthProvider]:

@@ -18,7 +18,9 @@ const OAUTH_STATE_KEY = 'onedrive_rag_oauth_state';
 /** localStorage key of the session token; the app watches it to follow sign-in/out in other tabs. */
 export const TOKEN_STORAGE_KEY = TOKEN_KEY;
 
-export type OAuthProvider = 'microsoft' | 'google';
+// Microsoft sign-in is turned off: only Google sign-in is used.
+// export type OAuthProvider = 'microsoft' | 'google';
+export type OAuthProvider = 'google';
 
 /** Fired when the server rejects the session so the app can return to the login page. */
 export const AUTH_EXPIRED_EVENT = 'auth-expired';
@@ -148,7 +150,8 @@ export function discardOAuthAttempt(): void {
  * When already signed in, the provider account is linked to the current user.
  */
 export async function startOAuth(provider: OAuthProvider): Promise<void> {
-  const path = provider === 'google' ? '/auth/google/login' : '/auth/login';
+  // const path = provider === 'google' ? '/auth/google/login' : '/auth/login';  // Microsoft sign-in is turned off
+  const path = '/auth/google/login';
   const data = await apiJson<{ auth_url: string; state: string; code_verifier: string }>(path);
   const pending: PendingOAuth = { provider, state: data.state, code_verifier: data.code_verifier };
   sessionStorage.setItem(OAUTH_STATE_KEY, JSON.stringify(pending));
@@ -160,7 +163,8 @@ export async function completeOAuth(provider: OAuthProvider, code: string, state
   if (!saved || saved.provider !== provider || !state || saved.state !== state || !saved.code_verifier) {
     throw new ApiError('This sign-in link was not started from this browser. Please sign in again.', 400);
   }
-  const path = provider === 'google' ? '/auth/google/callback' : '/auth/callback';
+  // const path = provider === 'google' ? '/auth/google/callback' : '/auth/callback';  // Microsoft sign-in is turned off
+  const path = '/auth/google/callback';
   const data = await apiJson<{ token: string; user: UserProfile }>(
     path,
     jsonBody({ code, state, code_verifier: saved.code_verifier })
