@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     RETRIEVAL_CANDIDATES: int = 40
     RETRIEVAL_MAX_CHUNKS_PER_DOCUMENT: int = 4
     CONTEXT_MAX_CHARS: int = 24000
+    # "How many documents are about X": the most relevant documents considered, each shown to the model
+    # as one excerpt of its best passage (40 x 500 characters fits in CONTEXT_MAX_CHARS).
+    INVENTORY_MAX_DOCUMENTS: int = 40
+    INVENTORY_EXCERPT_CHARS: int = 500
     CHAT_HISTORY_TURNS: int = 6
     # Whole-document summaries: documents up to SUMMARY_MAX_CHARS are read in one pass; longer ones
     # are summarized part by part (at most SUMMARY_MAX_PARTS parts) and the notes merged.

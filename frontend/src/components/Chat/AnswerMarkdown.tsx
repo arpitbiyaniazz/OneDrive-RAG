@@ -68,7 +68,8 @@ function remarkCitations(ids: ReadonlySet<number>) {
 
 /**
  * Renders an answer as Markdown, turning [n] markers into superscript links to the cited file.
- * Images are never rendered (a document could try to make the model emit tracking images).
+ * Images and raw HTML are never rendered, and a link is clickable only when it points at a cited file:
+ * a document could make the model emit tracking images or phishing links.
  */
 export const AnswerMarkdown = memo(function AnswerMarkdown({
   content,
@@ -79,6 +80,7 @@ export const AnswerMarkdown = memo(function AnswerMarkdown({
 }) {
   const { remarkPlugins, components } = useMemo(() => {
     const byId = new Map(citations.map((c) => [c.source_id, c]));
+    const citedUrls = new Set(citations.map((c) => safeHttpUrl(c.url)).filter(Boolean));
     const rendered: Components = {
       sup: ({ node, children }) => {
         const citation = byId.get(Number(node?.properties?.dataCitation));
@@ -101,7 +103,7 @@ export const AnswerMarkdown = memo(function AnswerMarkdown({
       },
       a: ({ href, children }) => {
         const safe = safeHttpUrl(href);
-        if (!safe) return <>{children}</>;
+        if (!safe || !citedUrls.has(safe)) return <>{children}</>;
         return (
           <a href={safe} target="_blank" rel="noopener noreferrer nofollow">
             {children}
@@ -119,6 +121,7 @@ export const AnswerMarkdown = memo(function AnswerMarkdown({
       urlTransform={urlTransform}
       disallowedElements={['img']}
       unwrapDisallowed
+      skipHtml
     >
       {content}
     </ReactMarkdown>

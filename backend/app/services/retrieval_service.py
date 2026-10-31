@@ -2,17 +2,17 @@
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import String, cast, func, literal_column, select, text
-from sqlalchemy.dialects.postgresql import TSQUERY
+from sqlalchemy import String, and_, cast, func, literal_column, or_, select, text
+from sqlalchemy.dialects.postgresql import TSQUERY, distinct_on
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.chunk import DocumentChunk
 from app.models.document import INDEXED, Document
 from app.services.embedding_service import get_embedding_provider
-from app.services.query_engine import CatalogEntry, QueryPlan
+from app.services.query_engine import ANY_DATE, CREATED, INDEXED_DATE, CatalogEntry, DateRange, QueryPlan
 
 _RRF_K = 60
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
@@ -73,8 +73,25 @@ def _to_chunk(row) -> RetrievedChunk:
     )
 
 
+def _date_clause(dates: DateRange):
+    def within(column):
+        return and_(column >= dates.start, column < dates.end)
+
+    if dates.field == ANY_DATE:  # "documents of today": changed or added that day
+        return or_(within(Document.modified_date), within(Document.created_date))
+    return within({CREATED: Document.created_date, INDEXED_DATE: Document.last_ingested_at}.get(dates.field,
+                                                                                             Document.modified_date))
+
+
+def _folder_clause(folder: str):
+    """The folder and its subfolders, wherever it sits in the path (case-insensitive)."""
+    name = folder.strip("/").lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    path = func.lower(Document.folder_path)
+    return or_(path.like(f"%/{name}", escape="\\"), path.like(f"%/{name}/%", escape="\\"))
+
+
 def _base(user_id: str, model_id: str, document_ids: Optional[Sequence[str]], file_types: Sequence[str],
-          modified_after: Optional[datetime]):
+          modified_after: Optional[datetime], date_range: Optional[DateRange] = None, folder: Optional[str] = None):
     stmt = (
         select(*_columns())
         .join(Document, Document.id == DocumentChunk.document_id)
@@ -87,6 +104,10 @@ def _base(user_id: str, model_id: str, document_ids: Optional[Sequence[str]], fi
         stmt = stmt.where(Document.file_type.in_(list(file_types)))
     if modified_after:
         stmt = stmt.where(Document.modified_date >= modified_after)
+    if date_range:
+        stmt = stmt.where(_date_clause(date_range))
+    if folder:
+        stmt = stmt.where(_folder_clause(folder))
     return stmt
 
 
@@ -225,17 +246,92 @@ async def document_chunks_in_order(db: AsyncSession, user_id: str, document_id: 
     return sample_evenly(chunks, max_chars) if max_chars else chunks
 
 
-async def count_indexed(db: AsyncSession, user_id: str) -> int:
+def _indexed_documents(user_id: str, file_types: Sequence[str] = (), date_range: Optional[DateRange] = None,
+                       folder: Optional[str] = None):
+    conditions = [Document.user_id == user_id, Document.status == INDEXED]
+    if file_types:
+        conditions.append(Document.file_type.in_(list(file_types)))
+    if date_range:
+        conditions.append(_date_clause(date_range))
+    if folder:
+        conditions.append(_folder_clause(folder))
+    return conditions
+
+
+async def count_indexed(db: AsyncSession, user_id: str, file_types: Sequence[str] = (),
+                        date_range: Optional[DateRange] = None, folder: Optional[str] = None) -> int:
     return (await db.execute(
-        select(func.count(Document.id)).where(Document.user_id == user_id, Document.status == INDEXED)
+        select(func.count(Document.id)).where(*_indexed_documents(user_id, file_types, date_range, folder))
     )).scalar_one()
 
 
-async def load_catalog(db: AsyncSession, user_id: str, limit: int = 5000) -> List[CatalogEntry]:
+async def load_catalog(db: AsyncSession, user_id: str, limit: int = 5000, file_types: Sequence[str] = (),
+                       date_range: Optional[DateRange] = None, folder: Optional[str] = None) -> List[CatalogEntry]:
+    """Indexed documents, newest first, optionally only some file types, dates or a folder."""
     rows = (await db.execute(
-        select(Document.id, Document.filename, Document.file_type, Document.folder_path, Document.modified_date, Document.drive_type)
-        .where(Document.user_id == user_id, Document.status == INDEXED)
+        select(Document.id, Document.filename, Document.file_type, Document.folder_path, Document.modified_date,
+               Document.drive_type, Document.created_date, Document.last_ingested_at, Document.onedrive_url)
+        .where(*_indexed_documents(user_id, file_types, date_range, folder))
         .order_by(Document.modified_date.desc().nullslast(), Document.filename)
         .limit(limit)
     )).all()
-    return [CatalogEntry(r.id, r.filename, r.file_type, r.folder_path, r.modified_date, r.drive_type) for r in rows]
+    return [CatalogEntry(r.id, r.filename, r.file_type, r.folder_path, r.modified_date, r.drive_type,
+                         r.created_date, r.last_ingested_at, r.onedrive_url) for r in rows]
+
+
+async def documents_about(db: AsyncSession, user_id: str, plan: QueryPlan, limit: int) -> Tuple[List[RetrievedChunk], bool]:
+    """Every document's best passage for the plan's topic, most relevant documents first (at most `limit`),
+    within the plan's file types and dates. The second value is True when more than `limit` documents
+    contain the topic's words, so the list may be incomplete.
+
+    Ranks whole documents rather than passages: a long document cannot push others out of the list.
+    Every passage is marked with signals["mentions"]: whether its document has a passage containing all
+    of the topic's words. For "which documents mention X" only those documents are returned, so the list
+    is exact instead of a judgement by the model.
+    """
+    provider = get_embedding_provider()
+    filters = dict(user_id=user_id, model_id=provider.model_id, document_ids=None, file_types=plan.file_types,
+                   modified_after=None, date_range=plan.date_range, folder=plan.folder)
+    keywords = _keyword_text(plan.topic)
+    containing: List = []
+    if keywords:
+        every_word = func.websearch_to_tsquery(literal_column("'simple'"), keywords)  # AND of the words
+        rank_all = func.ts_rank_cd(DocumentChunk.search_vector, every_word)
+        best_all = (_base(**filters).add_columns(rank_all.label("rank"))
+                    .where(DocumentChunk.search_vector.op("@@")(every_word))
+                    .ext(distinct_on(DocumentChunk.document_id)).order_by(DocumentChunk.document_id, rank_all.desc())
+                    .subquery())
+        containing = (await db.execute(select(best_all).order_by(best_all.c.rank.desc()).limit(limit + 1))).all()
+    if plan.topic_mode == "mentions" and keywords:
+        found = [_to_chunk(row) for row in containing[:limit]]
+        for chunk in found:
+            chunk.signals["mentions"] = 1
+        return found, len(containing) > limit
+    mentioned = {row.document_id for row in containing}
+    query_vector = await provider.embed_query(plan.topic)
+    distance = DocumentChunk.embedding.cosine_distance(query_vector)
+    nearest = (_base(**filters).add_columns(distance.label("distance")).where(DocumentChunk.embedding.is_not(None))
+               .ext(distinct_on(DocumentChunk.document_id)).order_by(DocumentChunk.document_id, distance).subquery())
+    by_meaning = (await db.execute(select(nearest).order_by(nearest.c.distance).limit(limit * 3))).all()
+
+    by_words: List = []
+    if keywords:
+        tsq = _tsquery(keywords)
+        rank = func.ts_rank_cd(DocumentChunk.search_vector, tsq)
+        best = (_base(**filters).add_columns(rank.label("rank")).where(DocumentChunk.search_vector.op("@@")(tsq))
+                .ext(distinct_on(DocumentChunk.document_id)).order_by(DocumentChunk.document_id, rank.desc()).subquery())
+        by_words = (await db.execute(select(best).order_by(best.c.rank.desc()).limit(limit + 1))).all()
+
+    # Reciprocal rank fusion per document (its best passage by meaning and by words are often different
+    # passages). The passage shown is the one containing the topic's words when there is one.
+    scores: Dict[str, float] = {}
+    passages: Dict[str, RetrievedChunk] = {}
+    for signal, rows in (("keyword", by_words), ("vector", by_meaning)):
+        for rank, row in enumerate(rows):
+            scores[row.document_id] = scores.get(row.document_id, 0.0) + 1.0 / (_RRF_K + rank + 1)
+            passages.setdefault(row.document_id, _to_chunk(row)).signals[signal] = rank + 1
+    ranked = sorted(scores, key=lambda doc_id: scores[doc_id], reverse=True)[:limit]
+    for doc_id in ranked:
+        passages[doc_id].score = scores[doc_id]
+        passages[doc_id].signals["mentions"] = int(doc_id in mentioned)
+    return [passages[doc_id] for doc_id in ranked], len(by_words) > limit

@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 import re
 from dataclasses import dataclass
@@ -109,6 +110,22 @@ def get_llm_client() -> LLMClient:
 
 _SOURCE_RE = re.compile(r'<source id="(\d+)"[^>]*>\n(.*?)\n</source>', re.DOTALL)
 _NOTE_RE = re.compile(r"^- (.+?) \[(\d+)\]$", re.MULTILINE)
+_CATALOG_RE = re.compile(r'<catalog count="(\d+)"[^>]*>\n(.*?)</catalog>', re.DOTALL)
+_CATALOG_ENTRY_RE = re.compile(r"^\[(\d+)\] (.+?) \(", re.MULTILINE)
+_SOURCE_TITLE_RE = re.compile(r'<source id="(\d+)" title="([^"]*)"')
+
+
+def _mock_document_list(content: str) -> Optional[str]:
+    """A document list the way the answer prompt asks for one: the count, then '- Title [n]' per document."""
+    catalog = _CATALOG_RE.search(content)
+    if catalog:
+        entries = _CATALOG_ENTRY_RE.findall(catalog.group(2))
+        lines = [f"- {title} [{number}]" for number, title in entries]
+        return "\n".join([f"{catalog.group(1)} documents match.", *lines]) if entries else "No documents match."
+    if "<inventory " in content:
+        lines = [f"- {html.unescape(title)} [{number}]" for number, title in _SOURCE_TITLE_RE.findall(content)]
+        return "\n".join([f"{len(lines)} documents match.", *lines]) if lines else "No documents match."
+    return None
 
 
 def _mock_notes(content: str) -> str:
@@ -124,6 +141,11 @@ def _mock_notes(content: str) -> str:
 async def _mock_stream(messages: List[Dict[str, str]]) -> AsyncIterator[str]:
     """Deterministic extractive responder for tests (LLM_PROVIDER=mock, never allowed in production)."""
     content = messages[-1]["content"]
+    listed = _mock_document_list(content)
+    if listed is not None:
+        for line in listed.split("\n"):
+            yield line + "\n"
+        return
     question = content.rsplit("<question>", 1)[-1]
     q_words = set(re.findall(r"\w+", question.lower()))
     candidates = [(source_id, sentence)

@@ -4,6 +4,7 @@ import logging
 import uuid
 from datetime import timedelta
 from typing import List, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -19,6 +20,7 @@ from app.db.database import AsyncSessionLocal, get_db, utcnow
 from app.models.chat import ChatMessage, ChatQuestion, ChatSession
 from app.models.user import User
 from app.services import rag_service
+from app.services.answer_guard import AnswerGuard
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["Chat"])
@@ -27,6 +29,8 @@ router = APIRouter(prefix="/chat", tags=["Chat"])
 class ChatStreamRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=settings.MAX_QUERY_CHARS)
     session_id: Optional[str] = Field(None, max_length=36)
+    # The browser's IANA time zone (e.g. "Asia/Kolkata"): "today" and date filters use the user's dates.
+    timezone: Optional[str] = Field(None, max_length=64)
 
     @field_validator("query")
     @classmethod
@@ -40,6 +44,16 @@ class FeedbackRequest(BaseModel):
     message_id: str = Field(..., max_length=36)
     feedback: int = Field(..., ge=-1, le=1)
     comment: Optional[str] = Field(None, max_length=2000)
+
+
+def _zone(name: Optional[str]) -> Optional[ZoneInfo]:
+    """The user's time zone, or None (UTC) when it is missing or not a valid IANA name."""
+    if not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
 
 
 def _sse(payload: dict) -> str:
@@ -75,7 +89,8 @@ async def _enforce_rate_limit(db: AsyncSession, user_id: str) -> None:
 
 @router.post("/stream")
 async def stream_chat(req: ChatStreamRequest, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
-    """Server-Sent Events: {"status"} -> {"token"}* -> {"done", citations, message_id} or {"error"}."""
+    """Server-Sent Events: {"status"} -> {"token"}* -> {"done", citations, message_id} or {"error"}.
+    A {"replace"} event, when present, replaces the text shown so far (an answer withheld by the guard)."""
     await _enforce_rate_limit(db, user.id)
     session = await _owned_session(db, req.session_id, user) if req.session_id else None
     history: List[dict] = []
@@ -102,7 +117,7 @@ async def stream_chat(req: ChatStreamRequest, db: AsyncSession = Depends(get_db)
     session.updated_at = utcnow()
     await db.commit()
 
-    session_id, user_id, question = session.id, user.id, req.query
+    session_id, user_id, question, zone = session.id, user.id, req.query, _zone(req.timezone)
     message_id = str(uuid.uuid4())
     otel_trace_id = get_current_trace_id()  # links the Langfuse trace to the request's OpenTelemetry trace
 
@@ -118,14 +133,32 @@ async def stream_chat(req: ChatStreamRequest, db: AsyncSession = Depends(get_db)
                                      "otel_trace_id": otel_trace_id}) as trace:
                 trace_id = trace.trace_id
                 async with AsyncSessionLocal() as work_db:
-                    prepared = await rag_service.prepare(work_db, user_id, question, history)
+                    prepared = await rag_service.prepare(work_db, user_id, question, history, tz=zone)
                 citations = prepared.citations
                 # A long document is first read part by part ("reading"), then the answer is written.
                 status = {"status": "reading", "parts": len(prepared.parts)} if prepared.parts else {"status": "generating"}
                 yield _sse({**status, "intent": prepared.plan.intent, "sources": len(citations)})
-                async for token in rag_service.stream_answer(prepared):
-                    answer.append(token)
-                    yield _sse({"token": token})
+                # Only links to the cited documents survive; images, HTML and recited instructions do not.
+                guard = AnswerGuard(c.get("url") for c in citations)
+                stream = rag_service.stream_answer(prepared)
+                try:
+                    async for token in stream:
+                        safe = guard.feed(token)
+                        if guard.blocked:
+                            break
+                        if safe:
+                            answer.append(safe)
+                            yield _sse({"token": safe})
+                finally:
+                    await stream.aclose()
+                safe = guard.finish()
+                if safe:
+                    answer.append(safe)
+                    yield _sse({"token": safe})
+                if guard.blocked:
+                    logger.warning("Answer withheld: it repeated the assistant's instructions")
+                    answer[:] = [guard.text]
+                    yield _sse({"replace": guard.text})
                 trace.update(output="".join(answer), metadata={"intent": prepared.plan.intent,
                                                                "search_query": prepared.plan.search_query,
                                                                "sources": len(citations)})

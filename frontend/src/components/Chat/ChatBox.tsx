@@ -41,6 +41,7 @@ interface StreamEvent {
   parts?: number;
   session_id?: string;
   token?: string;
+  replace?: string; // replaces the text shown so far (an answer the server withheld)
   done?: boolean;
   error?: string;
   message_id?: string;
@@ -80,6 +81,15 @@ function statusLabel(status: string, parts?: number): string {
 }
 
 const withNote = (content: string, note: string) => (content ? `${content}\n\n_${note}_` : `_${note}_`);
+
+/** The browser's IANA time zone ("Asia/Kolkata"), or undefined where the runtime does not report one. */
+function browserTimeZone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 const toChatMessage = (m: SessionMessage): ChatMessage => ({
   id: m.id,
@@ -480,7 +490,8 @@ export function ChatBox({
       const response = await apiFetch('/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q, session_id: activeSessionIdRef.current }),
+        // The time zone makes "today" and date questions use the user's local dates.
+        body: JSON.stringify({ query: q, session_id: activeSessionIdRef.current, timezone: browserTimeZone() }),
         signal: request.controller.signal,
       });
       if (!isCurrent()) return;
@@ -497,6 +508,11 @@ export function ChatBox({
         }
         if (event.token) {
           received += event.token;
+          const text = received;
+          patchAnswer(() => ({ content: text }));
+        }
+        if (event.replace !== undefined) {
+          received = event.replace;
           const text = received;
           patchAnswer(() => ({ content: text }));
         }
