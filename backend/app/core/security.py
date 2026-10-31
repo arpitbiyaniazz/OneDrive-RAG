@@ -44,14 +44,18 @@ def decrypt_token(encrypted_token: Optional[str]) -> Optional[str]:
         raise TokenDecryptionError("Stored OAuth token cannot be decrypted") from exc
 
 
-def create_access_token(user_id: str, token_version: int) -> str:
-    """Issues a session JWT. `token_version` lets logout revoke every outstanding token."""
+def create_access_token(user_id: str, token_version: int, signed_in_at: Optional[datetime] = None) -> str:
+    """Issues a session JWT. `token_version` lets logout revoke every outstanding token. A renewed token
+    keeps the original sign-in time (`auth`) and never lasts beyond SESSION_MAX_DAYS after it."""
     now = datetime.now(UTC)
+    signed_in_at = signed_in_at or now
     payload = {
         "sub": user_id,
         "ver": token_version,
         "iat": now,
-        "exp": now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
+        "auth": int(signed_in_at.timestamp()),
+        "exp": min(now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
+                   signed_in_at + timedelta(days=settings.SESSION_MAX_DAYS)),
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
 

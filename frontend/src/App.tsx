@@ -27,6 +27,7 @@ import {
   fetchCurrentUser,
   hasSessionToken,
   logoutUser,
+  renewSession,
   startIngestion,
   fetchChatSessions,
   deleteChatSession,
@@ -55,6 +56,22 @@ interface ConnectResult {
 }
 
 const SESSION_EXPIRED_MESSAGE = 'Your session has expired. Please sign in again.';
+const RENEW_CHECK_MS = 15 * 60 * 1000; // renewSession() itself renews at most once an hour
+
+/**
+ * Waits for the server to answer again (restart, network drop) instead of showing the login page: only a
+ * rejected session (401) signs the user out. Retries with backoff up to 10 s between attempts.
+ */
+async function waitForCurrentUser(): Promise<UserProfile | null> {
+  for (let attempt = 0; ; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * 2 ** attempt, 10_000)));
+    try {
+      return await fetchCurrentUser();
+    } catch {
+      // still unreachable
+    }
+  }
+}
 
 const driveName = (drive: DriveType) => (drive === 'google_drive' ? 'Google Drive' : 'OneDrive');
 
@@ -75,6 +92,7 @@ function formatRelativeTime(dateStr: string | null | undefined, now: number): st
 export function App() {
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
+  const [serverUnreachable, setServerUnreachable] = useState<boolean>(false);
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [connectResult, setConnectResult] = useState<ConnectResult | null>(null);
@@ -140,7 +158,15 @@ export function App() {
             }
           }
         }
-        const user = (await fetchCurrentUser().catch(() => null)) ?? signedIn;
+        let user: UserProfile | null;
+        try {
+          user = (await fetchCurrentUser()) ?? signedIn;
+        } catch {
+          // The server did not answer (restarting, offline): keep the session and wait for it.
+          setServerUnreachable(!signedIn);
+          user = signedIn ?? (await waitForCurrentUser());
+          setServerUnreachable(false);
+        }
         setCurrentUser(user);
         if (user && connectedDrive) {
           setConnectResult({ drive: connectedDrive, error: oauthError });
@@ -185,6 +211,26 @@ export function App() {
     };
   }, [signOutLocally]);
 
+  // Keeps a user who uses the app signed in: the session token is renewed on load, regularly while the app
+  // is open and when the tab comes back into view. It expires only after days without use.
+  const userId = currentUser?.id;
+  useEffect(() => {
+    if (!userId) return;
+    const renew = () => {
+      renewSession().catch(() => undefined);
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') renew();
+    };
+    renew();
+    const timer = window.setInterval(renew, RENEW_CHECK_MS);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [userId]);
+
   const handleSignOut = useCallback(async () => {
     await logoutUser();
     signOutLocally(null);
@@ -192,7 +238,7 @@ export function App() {
 
   const clearConnectResult = useCallback(() => setConnectResult(null), []);
 
-  if (authLoading) return <Splash />;
+  if (authLoading) return <Splash unreachable={serverUnreachable} />;
 
   // Render Login Page if user is not authenticated
   if (!currentUser) {
@@ -225,7 +271,7 @@ export function App() {
 }
 
 /** Neutral placeholder while the session is being checked (nothing interactive yet). */
-function Splash() {
+function Splash({ unreachable = false }: { unreachable?: boolean }) {
   return (
     <div
       role="status"
@@ -256,7 +302,7 @@ function Splash() {
       >
         <FolderSync size={24} color="#ffffff" aria-hidden="true" />
       </div>
-      <span>Loading...</span>
+      <span>{unreachable ? "Can't reach the server. Retrying..." : 'Loading...'}</span>
     </div>
   );
 }

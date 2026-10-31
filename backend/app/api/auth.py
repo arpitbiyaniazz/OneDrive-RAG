@@ -1,4 +1,5 @@
 import logging
+from datetime import UTC, datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -212,6 +213,20 @@ async def sandbox_login(db: AsyncSession = Depends(get_db)):
 @router.get("/me")
 async def me(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     return await _profile(db, user)
+
+
+@router.post("/refresh")
+async def refresh_session(credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
+                          db: AsyncSession = Depends(get_db)):
+    """A fresh token for a valid session: the app calls this while it is open so the user stays signed in.
+    The original sign-in time is kept, so renewals stop SESSION_MAX_DAYS after it."""
+    user = await _user_from_token(credentials, db)
+    if user is None:
+        raise _UNAUTHORIZED
+    payload = decode_access_token(credentials.credentials) or {}
+    signed_in = payload.get("auth") or payload.get("iat")
+    signed_in_at = datetime.fromtimestamp(signed_in, UTC) if isinstance(signed_in, (int, float)) else None
+    return {"token": create_access_token(user.id, user.token_version, signed_in_at)}
 
 
 @router.post("/logout")

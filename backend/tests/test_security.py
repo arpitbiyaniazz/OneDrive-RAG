@@ -39,6 +39,40 @@ async def test_logout_revokes_existing_tokens(client, auth_headers):
     assert (await client.get("/api/auth/me", headers=auth_headers)).status_code == 401
 
 
+async def test_sessions_are_renewed_and_still_revoked_by_sign_out(client, auth_headers):
+    import jwt
+
+    from app.core.config import settings
+
+    res = await client.post("/api/auth/refresh", headers=auth_headers)
+    assert res.status_code == 200
+    renewed = {"Authorization": f"Bearer {res.json()['token']}"}
+    claims = jwt.decode(res.json()["token"], settings.SECRET_KEY, algorithms=["HS256"])
+    original = jwt.decode(auth_headers["Authorization"].split()[1], settings.SECRET_KEY, algorithms=["HS256"])
+    assert claims["auth"] == original["auth"]  # the sign-in time is carried over, not reset
+    assert claims["exp"] - claims["iat"] == settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    assert (await client.get("/api/auth/me", headers=renewed)).status_code == 200
+
+    assert (await client.post("/api/auth/logout", headers=renewed)).status_code == 200
+    for headers in (auth_headers, renewed):  # signing out ends the old and the renewed token
+        assert (await client.post("/api/auth/refresh", headers=headers)).status_code == 401
+    assert (await client.post("/api/auth/refresh")).status_code == 401
+
+
+def test_no_session_outlives_the_maximum_after_sign_in():
+    from datetime import UTC, datetime, timedelta
+
+    import jwt
+
+    from app.core.config import settings
+
+    signed_in = datetime.now(UTC) - timedelta(days=settings.SESSION_MAX_DAYS - 1)
+    claims = jwt.decode(security.create_access_token("u1", 0, signed_in), settings.SECRET_KEY, algorithms=["HS256"])
+    assert claims["exp"] == int((signed_in + timedelta(days=settings.SESSION_MAX_DAYS)).timestamp())
+    too_old = signed_in - timedelta(days=2)
+    assert security.decode_access_token(security.create_access_token("u1", 0, too_old)) is None  # already expired
+
+
 async def test_forged_token_with_other_secret_is_rejected(client):
     import jwt
 

@@ -111,14 +111,45 @@ export const isJobRunning = (status?: JobStatus | null) => status === 'PENDING' 
 
 export const fetchHealth = () => apiJson<HealthStatus>('/health');
 
+/**
+ * The signed-in user, or null when there is no valid session (only a 401 ends it). Throws when the server
+ * cannot answer (restarting, offline): the session is kept, so a reload never signs the user out.
+ */
 export async function fetchCurrentUser(): Promise<UserProfile | null> {
   if (!getToken()) return null;
   const res = await apiFetch('/auth/me');
-  if (!res.ok) {
-    if (res.status === 401) localStorage.removeItem(TOKEN_KEY);
+  if (res.status === 401) {
+    localStorage.removeItem(TOKEN_KEY);
     return null;
   }
+  if (!res.ok) throw await errorFrom(res);
   return res.json();
+}
+
+const RENEW_MIN_INTERVAL_MS = 60 * 60 * 1000;
+let lastRenewal = 0;
+
+/**
+ * Swaps the session token for a fresh one (at most once an hour), so a user who keeps using the app stays
+ * signed in; the server still ends every session some weeks after the sign-in.
+ */
+export async function renewSession(): Promise<void> {
+  const sent = getToken();
+  if (!sent || Date.now() - lastRenewal < RENEW_MIN_INTERVAL_MS) return;
+  lastRenewal = Date.now();
+  const res = await apiFetch('/auth/refresh', { method: 'POST' });
+  if (res.status === 401) {
+    localStorage.removeItem(TOKEN_KEY);
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+    return;
+  }
+  if (!res.ok) {
+    lastRenewal = 0; // a server hiccup: try again next time
+    return;
+  }
+  const { token } = (await res.json()) as { token?: string };
+  // Not after a sign-out or another account's sign-in in the meantime.
+  if (token && getToken() === sent) localStorage.setItem(TOKEN_KEY, token);
 }
 
 interface PendingOAuth {

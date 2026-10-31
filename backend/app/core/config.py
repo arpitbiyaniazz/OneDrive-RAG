@@ -113,7 +113,11 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = _DEV_SECRET_KEY
     TOKEN_ENCRYPTION_KEY: str = _DEV_TOKEN_ENCRYPTION_KEY
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 12
+    # Sessions slide: a token lasts ACCESS_TOKEN_EXPIRE_MINUTES and the app renews it while it is open
+    # (POST /api/auth/refresh), so a regular user stays signed in across reloads and days. No session
+    # outlives SESSION_MAX_DAYS after the sign-in; signing out revokes every token at once.
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
+    SESSION_MAX_DAYS: int = 30
     OAUTH_STATE_TTL_SECONDS: int = 600
 
     # CORS: comma-separated list of allowed browser origins
