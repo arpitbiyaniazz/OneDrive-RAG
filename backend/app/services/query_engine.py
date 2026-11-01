@@ -6,7 +6,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from app.core.config import settings
 from app.prompts import REWRITE_SYSTEM_PROMPT
@@ -50,7 +50,7 @@ _INVENTORY_HEAD_RE = re.compile(
 )
 _TOPIC_RE = re.compile(
     r"\b(?:about|regarding|concerning|on the (?:topic|subject) of|(?:related|relating|relevant) to|"
-    r"(?:that|which|documents?|files?|docs|pdfs?|spreadsheets?|presentations?) (?:mentions?|covers?|discuss(?:es)?|"
+    r"(?:that|which|these|those|them|documents?|files?|docs|pdfs?|spreadsheets?|presentations?) (?:mentions?|covers?|discuss(?:es)?|"
     r"talks? about|refers? to|contains?|deals? with)|mentioning|covering|discussing|containing|referring to|"
     r"dealing with)\s+(?P<topic>.+)",
     re.IGNORECASE,
@@ -81,6 +81,8 @@ _FOLDER_RE = re.compile(
     rf"|(?P<before>{_FOLDER_NAME})\s+(?:folder|directory)\b)",
     re.IGNORECASE,
 )
+# "which of these mention X": a list question about the documents the user selected.
+_OF_SELECTED_RE = re.compile(r"\b(?:which|how many|what)\s+of\s+(?:these|those|them|the selected)\b", re.IGNORECASE)
 # "which documents mention X" asks for every document containing X, not a judgement of what it is about.
 _MENTION_RE = re.compile(r"\b(?:mention(?:s|ing|ed)?|contain(?:s|ing)?|refer(?:s|ring)?\s+to)\b", re.IGNORECASE)
 # A file name with its extension ("Budget 2026.xlsx") names a document, not a file type to filter by.
@@ -198,6 +200,8 @@ class QueryPlan:
     topic_mode: str = "about"  # "mentions": every document containing the topic's words
     date_range: Optional[DateRange] = None
     folder: Optional[str] = None  # documents in this folder (or its subfolders)
+    # The documents the user selected for the question: it is answered from these only.
+    document_scope: List[str] = field(default_factory=list)
 
 
 def strip_citations(text: str) -> str:
@@ -495,21 +499,24 @@ def _recent_document(query: str, catalog: List[CatalogEntry]) -> Optional[Catalo
     return catalog[0] if catalog and _RECENT_DOC_RE.search(query) else None
 
 
-def _is_inventory(query: str, filtered: bool) -> bool:
+def _is_inventory(query: str, filtered: bool, selected: bool = False) -> bool:
     """Asks which documents exist (optionally about a topic or from a date), not what they say."""
     if _CONTENT_CUE_RE.search(query):
         return False
     if _LIST_RE.search(query):
         return True
-    return filtered and bool(_INVENTORY_HEAD_RE.search(query)) and not _SUMMARY_RE.search(query)
+    head = _INVENTORY_HEAD_RE.search(query) or (selected and _OF_SELECTED_RE.search(query))
+    return filtered and bool(head) and not _SUMMARY_RE.search(query)
 
 
-def _rule_intent(query: str, targets: List[str], names: List[str], recent: bool = False, filtered: bool = False) -> str:
+def _rule_intent(query: str, targets: List[str], names: List[str], recent: bool = False, filtered: bool = False,
+                 selected: bool = False) -> str:
     if len(query) <= 80 and _GREETING_RE.match(query):
         return CONVERSATION
-    if not recent and _is_inventory(query, filtered):
+    if not recent and _is_inventory(query, filtered, selected):
         return LIST_DOCUMENTS
-    asks_for_summary = _SUMMARY_RE.search(query) or (recent and _CONTENTS_RE.search(query))
+    # With documents selected, a request made only of summary words ("explain this", "what is it about") is a summary.
+    asks_for_summary = selected or _SUMMARY_RE.search(query) or (recent and _CONTENTS_RE.search(query))
     if targets and asks_for_summary and _only_summary_words(query, names):
         return SUMMARIZE
     return DOCUMENT_QUESTION
@@ -523,11 +530,14 @@ def _history_text(history: List[Dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
-async def _llm_rewrite(query: str, history: List[Dict[str, str]], catalog: List[CatalogEntry]) -> Optional[dict]:
+async def _llm_rewrite(query: str, history: List[Dict[str, str]], catalog: List[CatalogEntry],
+                       selected: Sequence[CatalogEntry] = ()) -> Optional[dict]:
     titles = "\n".join(f"- {e.filename}" for e in catalog[:200]) or "(none)"
+    latest = (f"Latest message (the user selected these documents for it: {'; '.join(e.filename for e in selected)})"
+              if selected else "Latest message")
     user = (
         f"Document list:\n{titles}\n\nConversation:\n{_history_text(history)}\n\n"
-        f"Latest message:\n{query}\n\nReturn the JSON object."
+        f"{latest}:\n{query}\n\nReturn the JSON object."
     )
     try:
         raw = await get_llm_client().complete_json(
@@ -542,28 +552,37 @@ async def _llm_rewrite(query: str, history: List[Dict[str, str]], catalog: List[
 
 
 async def plan_query(query: str, history: List[Dict[str, str]], catalog: List[CatalogEntry],
-                     now: Optional[datetime] = None) -> QueryPlan:
-    """`now` is the current time in the user's time zone (dates such as "today" are theirs)."""
+                     now: Optional[datetime] = None, selected: Sequence[CatalogEntry] = ()) -> QueryPlan:
+    """`now` is the current time in the user's time zone (dates such as "today" are theirs). `selected` are
+    the documents the user picked for this question: it is answered from them only."""
     query = query.strip()
     now = now or datetime.now(UTC)
     topic, dates, folder = _inventory_filters(query, catalog, now)
-    matched = _name_matches(query, catalog)
-    names = [_stem(e.filename) for e in matched]
-    recent = None if matched else _recent_document(query, catalog)
-    if recent:
-        matched = [recent]
-    elif not matched and _SUMMARY_RE.search(query):
-        loose = loose_match(query, catalog)
-        if loose:
-            matched, names = [loose], [" ".join(set(_words(query)) & set(_words(_stem(loose.filename))))]
-    targets = [e.id for e in matched]
+    scope = list(dict.fromkeys(e.id for e in selected))
+    recent = None
+    if selected:
+        matched = list(selected)
+        names = [_stem(e.filename) for e in matched]
+    else:
+        matched = _name_matches(query, catalog)
+        names = [_stem(e.filename) for e in matched]
+        recent = None if matched else _recent_document(query, catalog)
+        if recent:
+            matched = [recent]
+        elif not matched and _SUMMARY_RE.search(query):
+            loose = loose_match(query, catalog)
+            if loose:
+                matched, names = [loose], [" ".join(set(_words(query)) & set(_words(_stem(loose.filename))))]
+    targets = scope or [e.id for e in matched]
     plan = QueryPlan(
         query=query,
         search_query=query,
-        intent=_rule_intent(query, targets, names, recent=bool(recent), filtered=bool(topic or dates or folder)),
+        intent=_rule_intent(query, targets, names, recent=bool(recent), filtered=bool(topic or dates or folder),
+                            selected=bool(scope)),
         target_document_ids=targets,
         file_types=_file_types(query),
         modified_after=_modified_after(query, now),
+        document_scope=scope,
     )
     if plan.intent == LIST_DOCUMENTS:
         plan.topic, plan.date_range, plan.folder = topic, dates, folder
@@ -576,7 +595,7 @@ async def plan_query(query: str, history: List[Dict[str, str]], catalog: List[Ca
     if not history and not loose_summary:
         return plan
 
-    data = await _llm_rewrite(query, history, catalog)
+    data = await _llm_rewrite(query, history, catalog, selected)
     if not data:
         return plan
     standalone = data.get("standalone_query")
@@ -593,7 +612,9 @@ async def plan_query(query: str, history: List[Dict[str, str]], catalog: List[Ca
     titles = data.get("target_documents")
     titles = [t for t in titles if isinstance(t, str)] if isinstance(titles, list) else []
     named = [by_title[t.lower()] for t in titles if t.lower() in by_title]
-    if named:
+    if scope:
+        pass  # the documents the user selected stay the targets, whatever the model resolved
+    elif named:
         plan.target_document_ids = list(dict.fromkeys(named + plan.target_document_ids))[:3]
     else:
         plan.target_document_ids = match_documents(plan.search_query, catalog) or plan.target_document_ids

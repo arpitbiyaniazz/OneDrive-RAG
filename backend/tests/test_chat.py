@@ -215,3 +215,67 @@ async def test_an_answer_reciting_the_instructions_is_replaced(client, auth_head
     msgs = (await client.get(f"/api/chat/sessions/{res.headers['X-Chat-Session-Id']}/messages",
                              headers=auth_headers)).json()["messages"]
     assert msgs[-1]["content"] == REFUSAL
+
+
+async def test_questions_can_be_limited_to_selected_documents(client, auth_headers, monkeypatch):
+    from tests.conftest import make_user
+
+    roots = [{"id": "root", "drive_type": d, "is_folder": True} for d in ("onedrive", "google_drive")]
+    await client.post("/api/ingestion/start", headers=auth_headers, json={"items": roots})
+    await drain_jobs()
+    docs = (await client.get("/api/documents?status=indexed", headers=auth_headers)).json()["documents"]
+    ids = {d["filename"]: d["id"] for d in docs}
+    prepared_answers = []
+    real_prepare = rag_service.prepare
+
+    async def spy(*args, **kwargs):
+        prepared_answers.append(await real_prepare(*args, **kwargs))
+        return prepared_answers[-1]
+
+    monkeypatch.setattr(rag_service, "prepare", spy)
+
+    async def ask(query, names, session_id=None):
+        res = await client.post("/api/chat/stream", headers=auth_headers,
+                                json={"query": query, "session_id": session_id, "document_ids": [ids[n] for n in names]})
+        assert res.status_code == 200, res.text
+        return res, _events(res.text)[-1], prepared_answers[-1]
+
+    # The leave allowance is in the leave policy: limited to the budget, nothing else is searched.
+    _, done, prepared = await ask("How many annual leave days do employees get?", ["Budget 2026.xlsx"])
+    assert prepared.chunks and {c.filename for c in prepared.chunks} == {"Budget 2026.xlsx"}
+    assert '<question documents="Budget 2026.xlsx">' in prepared.messages[-1]["content"]
+    assert {c["filename"] for c in done["citations"]} <= {"Budget 2026.xlsx"}
+    _, done, prepared = await ask("How many annual leave days do employees get?", ["Leave Policy 2026.pdf"])
+    assert {c["filename"] for c in done["citations"]} == {"Leave Policy 2026.pdf"}
+
+    # Two documents: passages from both, so they can be compared.
+    _, _, prepared = await ask("Compare these documents", ["Leave Policy 2026.pdf", "Expense Policy.txt"])
+    assert {c.filename for c in prepared.chunks} == {"Leave Policy 2026.pdf", "Expense Policy.txt"}
+    # "Explain this" reads the whole selected document.
+    _, _, prepared = await ask("Explain this", ["Expense Policy.txt"])
+    assert prepared.plan.intent == "summarize_document" and {c.filename for c in prepared.chunks} == {"Expense Policy.txt"}
+    # Which of the selected documents contain a word: exactly those.
+    _, done, _ = await ask("Which of these mention Contoso?", ["Budget 2026.xlsx", "Expense Policy.txt",
+                                                               "Company Overview.txt"])
+    assert {c["filename"] for c in done["citations"]} == {"Expense Policy.txt", "Company Overview.txt"}
+
+    # The selection is kept with the question, and a follow-up without one knows what it was about.
+    res, _, _ = await ask("What does it say about travel?", ["Expense Policy.txt"])
+    session_id = res.headers["X-Chat-Session-Id"]
+    msgs = (await client.get(f"/api/chat/sessions/{session_id}/messages", headers=auth_headers)).json()["messages"]
+    assert [(d["id"], d["filename"]) for d in msgs[0]["documents"]] == [(ids["Expense Policy.txt"], "Expense Policy.txt")]
+    assert msgs[1]["documents"] == []
+    _, _, prepared = await ask("And about hotels?", [], session_id=session_id)
+    assert prepared.plan.document_scope == []
+    assert prepared.messages[1]["content"].startswith("[About the selected documents: Expense Policy.txt]")
+
+    # Only the user's own indexed documents can be selected, and at most MAX_SELECTED_DOCUMENTS.
+    res = await client.post("/api/chat/stream", headers=auth_headers, json={"query": "hi", "document_ids": ["missing"]})
+    assert res.status_code == 400
+    _, other = await make_user("other@example.com")
+    res = await client.post("/api/chat/stream", headers=other, json={"query": "What does it say about travel?",
+                                                                      "document_ids": [ids["Expense Policy.txt"]]})
+    assert res.status_code == 400
+    res = await client.post("/api/chat/stream", headers=auth_headers,
+                            json={"query": "hi", "document_ids": [f"doc-{i}" for i in range(11)]})
+    assert res.status_code == 422

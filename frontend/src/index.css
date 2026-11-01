@@ -288,6 +288,170 @@ summary:focus-visible,
   box-shadow: 0 0 0 3px var(--brand-glow), var(--input-shadow);
 }
 
+/* Document picker: opens above the chat input when the user types "/" */
+.doc-picker {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  display: flex;
+  flex-direction: column;
+  max-height: min(320px, 45vh);
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--input-shadow);
+  overflow: hidden;
+  z-index: 30;
+}
+
+.doc-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.85rem;
+  border-bottom: 1px solid var(--app-border);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--app-text-secondary);
+}
+
+.doc-picker-keys {
+  font-weight: 500;
+  color: var(--app-text-muted);
+  white-space: nowrap;
+}
+
+.doc-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.3rem;
+  overflow-y: auto;
+}
+
+.doc-option {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.doc-option[aria-selected='true'] {
+  background: var(--brand-bg);
+  box-shadow: inset 2px 0 0 var(--brand-primary);
+}
+
+.doc-option-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.doc-option-name {
+  font-size: 0.85rem;
+  color: var(--app-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-option-name strong {
+  color: var(--brand-cyan);
+}
+
+.doc-option-place {
+  font-size: 0.7rem;
+  color: var(--app-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-picker-note,
+.doc-picker-more {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 0.85rem;
+  font-size: 0.8rem;
+  color: var(--app-text-secondary);
+}
+
+.doc-picker-more {
+  padding: 0.45rem 0.85rem;
+  border-top: 1px solid var(--app-border);
+  font-size: 0.72rem;
+  color: var(--app-text-muted);
+}
+
+.doc-picker-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.6rem;
+  background: transparent;
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-full);
+  color: var(--app-text);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.doc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  padding: 0.2rem 0.3rem 0.2rem 0.55rem;
+  background: var(--brand-bg);
+  border: 1px solid var(--app-border-hover);
+  border-radius: var(--radius-full);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--app-text);
+  line-height: 1.4;
+}
+
+.doc-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+
+.doc-chip button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  color: var(--app-text-muted);
+  cursor: pointer;
+}
+
+.doc-chip button:hover,
+.doc-chip button:focus-visible {
+  background: var(--app-surface-hover);
+  color: var(--app-text);
+}
+
+@media (max-width: 768px) {
+  .doc-picker-keys {
+    display: none;
+  }
+  .doc-chip-name {
+    max-width: 180px;
+  }
+}
+
 /* Custom Scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

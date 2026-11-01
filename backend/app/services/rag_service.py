@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, tzinfo
 from html import escape
-from typing import AsyncIterator, Dict, List, Optional
+from typing import AsyncIterator, Dict, List, Optional, Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -113,6 +113,7 @@ def filter_description(plan: QueryPlan) -> Optional[str]:
         f"file types {', '.join(plan.file_types)}" if plan.file_types else None,
         plan.date_range.describe() if plan.date_range else None,
         f"in folder {plan.folder}" if plan.folder else None,
+        "among the documents the user selected" if plan.document_scope else None,
     ])) or None
 
 
@@ -159,7 +160,8 @@ def build_messages(question: str, history: List[Dict[str, str]], chunks: List[Re
                    catalog: Optional[List[CatalogEntry]] = None, notes: Optional[str] = None,
                    catalog_total: Optional[int] = None, *, catalog_filter: Optional[str] = None,
                    inventory: Optional[str] = None, today: Optional[str] = None,
-                   tz: Optional[tzinfo] = None) -> List[Dict[str, str]]:
+                   tz: Optional[tzinfo] = None, selected: Sequence[str] = ()) -> List[Dict[str, str]]:
+    """`selected` are the titles of the documents the user picked for the question (the sources come from them)."""
     messages = [{"role": "system", "content": system_prompt(today)}]
     for turn in history[-settings.CHAT_HISTORY_TURNS * 2:]:
         content = strip_citations(turn["content"]).strip()[:2000]
@@ -175,7 +177,8 @@ def build_messages(question: str, history: List[Dict[str, str]], chunks: List[Re
         blocks.append(format_catalog(catalog, total=catalog_total, tz=tz, filter_text=catalog_filter))
     if inventory:
         blocks.append(inventory)
-    blocks.append(f"<question>\n{_neutralize(question)}\n</question>")
+    picked = f' documents="{_attr("; ".join(selected))}"' if selected else ""
+    blocks.append(f"<question{picked}>\n{_neutralize(question)}\n</question>")
     if chunks and notes is None and catalog is None and not inventory:
         blocks.append(ANSWER_REMINDER)
     messages.append({"role": "user", "content": "\n\n".join(blocks)})
@@ -258,6 +261,7 @@ class PreparedAnswer:
     # Long single-document summaries: chunk indexes per part, summarized before the final answer.
     parts: List[List[int]] = field(default_factory=list)
     today: Optional[str] = None  # the user's local date
+    selected: List[str] = field(default_factory=list)  # titles of the documents the user selected
 
 
 async def _summary_chunks(db: AsyncSession, user_id: str, document_ids: List[str]) -> tuple[List[RetrievedChunk], List[List[int]]]:
@@ -285,38 +289,41 @@ CATALOG_LIMIT = 5000
 
 async def _document_list(db: AsyncSession, user_id: str, plan: QueryPlan, question: str,
                          history: List[Dict[str, str]], catalog: List[CatalogEntry], today: str,
-                         tz: Optional[tzinfo]) -> PreparedAnswer:
+                         tz: Optional[tzinfo], selected: List[str]) -> PreparedAnswer:
     """'Which/how many documents ...': with a topic, one passage per candidate document for the model to
     judge; otherwise the exact (date/type-filtered) catalog. Either way each document can be cited."""
     if plan.topic:
         found, more = await documents_about(db, user_id, plan, settings.INVENTORY_MAX_DOCUMENTS)
         chunks = [replace(c, content=excerpt(c.content, plan.topic, settings.INVENTORY_EXCERPT_CHARS)) for c in found]
         messages = build_messages(question, history, chunks, inventory=format_inventory(plan, len(chunks), more),
-                                  today=today, tz=tz)
+                                  today=today, tz=tz, selected=selected)
         return PreparedAnswer(plan=plan, chunks=chunks, messages=messages, citations=citation_payload(chunks),
-                              question=question, history=history, today=today)
-    filtered = bool(plan.file_types or plan.date_range or plan.folder)
-    entries = (await load_catalog(db, user_id, CATALOG_SHOWN, plan.file_types, plan.date_range, plan.folder)
+                              question=question, history=history, today=today, selected=selected)
+    filtered = bool(plan.file_types or plan.date_range or plan.folder or plan.document_scope)
+    entries = (await load_catalog(db, user_id, CATALOG_SHOWN, plan.file_types, plan.date_range, plan.folder,
+                                  plan.document_scope)
                if filtered else catalog)
     if filtered or len(catalog) >= CATALOG_LIMIT:
-        total = await count_indexed(db, user_id, plan.file_types, plan.date_range, plan.folder)
+        total = await count_indexed(db, user_id, plan.file_types, plan.date_range, plan.folder, plan.document_scope)
     else:
         total = len(catalog)
     messages = build_messages(question, history, [], entries, catalog_total=total, catalog_filter=filter_description(plan),
-                              today=today, tz=tz)
+                              today=today, tz=tz, selected=selected)
     return PreparedAnswer(plan=plan, chunks=[], messages=messages, citations=catalog_citations(entries[:CATALOG_SHOWN]),
-                          question=question, history=history, today=today)
+                          question=question, history=history, today=today, selected=selected)
 
 
 async def prepare(db: AsyncSession, user_id: str, question: str, history: List[Dict[str, str]],
-                  tz: Optional[tzinfo] = None) -> PreparedAnswer:
-    """`tz` is the user's time zone: "today", dates in answers and date filters are in their local time."""
+                  tz: Optional[tzinfo] = None, selected: Sequence[CatalogEntry] = ()) -> PreparedAnswer:
+    """`tz` is the user's time zone: "today", dates in answers and date filters are in their local time.
+    `selected` are the documents the user picked for the question: only their passages are used."""
     now = datetime.now(tz or UTC)
     today = now.date().isoformat()
+    titles = [e.filename for e in selected]
     catalog = await load_catalog(db, user_id, CATALOG_LIMIT)
-    plan = await plan_query(question, history, catalog, now=now)
+    plan = await plan_query(question, history, catalog, now=now, selected=selected)
     if plan.intent == LIST_DOCUMENTS:
-        return await _document_list(db, user_id, plan, question, history, catalog, today, tz)
+        return await _document_list(db, user_id, plan, question, history, catalog, today, tz, titles)
     chunks: List[RetrievedChunk] = []
     parts: List[List[int]] = []
     if plan.intent == SUMMARIZE and plan.target_document_ids:
@@ -325,9 +332,9 @@ async def prepare(db: AsyncSession, user_id: str, question: str, history: List[D
         chunks = await hybrid_search(db, user_id, plan)
     if not parts:
         chunks = _fit_budget(chunks, settings.SUMMARY_MAX_CHARS if plan.intent == SUMMARIZE else settings.CONTEXT_MAX_CHARS)
-    messages = [] if parts else build_messages(question, history, chunks, today=today, tz=tz)
+    messages = [] if parts else build_messages(question, history, chunks, today=today, tz=tz, selected=titles)
     return PreparedAnswer(plan=plan, chunks=chunks, messages=messages, citations=citation_payload(chunks),
-                          question=question, history=history, parts=parts, today=today)
+                          question=question, history=history, parts=parts, today=today, selected=titles)
 
 
 async def _part_notes(prepared: PreparedAnswer) -> List[str]:
@@ -352,7 +359,7 @@ async def stream_answer(prepared: PreparedAnswer) -> AsyncIterator[str]:
         notes = await _part_notes(prepared)
         title = prepared.chunks[0].filename if prepared.chunks else ""
         messages = build_messages(prepared.question, prepared.history, [], notes=format_notes(title, notes),
-                                  today=prepared.today)
+                                  today=prepared.today, selected=prepared.selected)
     async for token in get_llm_client().stream(messages):
         yield token
 

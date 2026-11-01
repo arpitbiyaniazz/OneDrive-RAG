@@ -84,6 +84,7 @@ class Settings(BaseSettings):
 
     # Limits
     MAX_QUERY_CHARS: int = 4000
+    MAX_SELECTED_DOCUMENTS: int = 10  # documents a question can be limited to (picked with "/" in the chat input)
     MAX_FILE_SIZE_MB: int = 50
     MAX_FILES_PER_JOB: int = 500
     MAX_TRACKED_FILES: int = 10000

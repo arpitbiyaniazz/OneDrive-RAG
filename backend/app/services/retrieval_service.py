@@ -206,6 +206,20 @@ async def hybrid_search(db: AsyncSession, user_id: str, plan: QueryPlan, top_k: 
         return [(f"{prefix}vector", await _vector_search(db, query_vector, candidates, **filters)),
                 (f"{prefix}keyword", await _keyword_search(db, plan.search_query, candidates, **filters))]
 
+    scope = plan.document_scope
+    if scope:
+        # The user selected the documents: only their passages, with a share from each one when there are
+        # several (so a comparison sees all of them), then their best passages overall.
+        limit = max(top_k, len(scope))
+        picked: List[RetrievedChunk] = []
+        if len(scope) > 1:
+            share = max(1, limit // len(scope))
+            for doc_id in scope:
+                picked += _fuse(await lists(document_ids=[doc_id]), share, share)
+        seen = {c.chunk_id for c in picked}
+        best = [c for c in _fuse(await lists(document_ids=scope), limit + len(seen), limit) if c.chunk_id not in seen]
+        return (picked + best)[:limit]
+
     results: List[RetrievedChunk] = []
     targets = plan.target_document_ids
     if len(targets) == 1:
@@ -247,8 +261,10 @@ async def document_chunks_in_order(db: AsyncSession, user_id: str, document_id: 
 
 
 def _indexed_documents(user_id: str, file_types: Sequence[str] = (), date_range: Optional[DateRange] = None,
-                       folder: Optional[str] = None):
+                       folder: Optional[str] = None, document_ids: Sequence[str] = ()):
     conditions = [Document.user_id == user_id, Document.status == INDEXED]
+    if document_ids:
+        conditions.append(Document.id.in_(list(document_ids)))
     if file_types:
         conditions.append(Document.file_type.in_(list(file_types)))
     if date_range:
@@ -259,19 +275,21 @@ def _indexed_documents(user_id: str, file_types: Sequence[str] = (), date_range:
 
 
 async def count_indexed(db: AsyncSession, user_id: str, file_types: Sequence[str] = (),
-                        date_range: Optional[DateRange] = None, folder: Optional[str] = None) -> int:
+                        date_range: Optional[DateRange] = None, folder: Optional[str] = None,
+                        document_ids: Sequence[str] = ()) -> int:
     return (await db.execute(
-        select(func.count(Document.id)).where(*_indexed_documents(user_id, file_types, date_range, folder))
+        select(func.count(Document.id)).where(*_indexed_documents(user_id, file_types, date_range, folder, document_ids))
     )).scalar_one()
 
 
 async def load_catalog(db: AsyncSession, user_id: str, limit: int = 5000, file_types: Sequence[str] = (),
-                       date_range: Optional[DateRange] = None, folder: Optional[str] = None) -> List[CatalogEntry]:
-    """Indexed documents, newest first, optionally only some file types, dates or a folder."""
+                       date_range: Optional[DateRange] = None, folder: Optional[str] = None,
+                       document_ids: Sequence[str] = ()) -> List[CatalogEntry]:
+    """Indexed documents, newest first, optionally only some file types, dates, a folder or given documents."""
     rows = (await db.execute(
         select(Document.id, Document.filename, Document.file_type, Document.folder_path, Document.modified_date,
                Document.drive_type, Document.created_date, Document.last_ingested_at, Document.onedrive_url)
-        .where(*_indexed_documents(user_id, file_types, date_range, folder))
+        .where(*_indexed_documents(user_id, file_types, date_range, folder, document_ids))
         .order_by(Document.modified_date.desc().nullslast(), Document.filename)
         .limit(limit)
     )).all()
@@ -281,8 +299,8 @@ async def load_catalog(db: AsyncSession, user_id: str, limit: int = 5000, file_t
 
 async def documents_about(db: AsyncSession, user_id: str, plan: QueryPlan, limit: int) -> Tuple[List[RetrievedChunk], bool]:
     """Every document's best passage for the plan's topic, most relevant documents first (at most `limit`),
-    within the plan's file types and dates. The second value is True when more than `limit` documents
-    contain the topic's words, so the list may be incomplete.
+    within the plan's file types, dates, folder and selected documents. The second value is True when more
+    than `limit` documents contain the topic's words, so the list may be incomplete.
 
     Ranks whole documents rather than passages: a long document cannot push others out of the list.
     Every passage is marked with signals["mentions"]: whether its document has a passage containing all
@@ -290,8 +308,8 @@ async def documents_about(db: AsyncSession, user_id: str, plan: QueryPlan, limit
     is exact instead of a judgement by the model.
     """
     provider = get_embedding_provider()
-    filters = dict(user_id=user_id, model_id=provider.model_id, document_ids=None, file_types=plan.file_types,
-                   modified_after=None, date_range=plan.date_range, folder=plan.folder)
+    filters = dict(user_id=user_id, model_id=provider.model_id, document_ids=plan.document_scope or None,
+                   file_types=plan.file_types, modified_after=None, date_range=plan.date_range, folder=plan.folder)
     keywords = _keyword_text(plan.topic)
     containing: List = []
     if keywords:

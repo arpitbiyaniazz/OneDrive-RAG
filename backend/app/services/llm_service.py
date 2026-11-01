@@ -146,7 +146,7 @@ async def _mock_stream(messages: List[Dict[str, str]]) -> AsyncIterator[str]:
         for line in listed.split("\n"):
             yield line + "\n"
         return
-    question = content.rsplit("<question>", 1)[-1]
+    question = re.split(r"<question\b[^>]*>", content)[-1]
     q_words = set(re.findall(r"\w+", question.lower()))
     candidates = [(source_id, sentence)
                   for source_id, passage in _SOURCE_RE.findall(content)

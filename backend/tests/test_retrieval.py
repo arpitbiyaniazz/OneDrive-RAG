@@ -351,3 +351,29 @@ async def test_list_filters_ignore_file_names_read_both_date_cues_and_folders():
     assert (plan.intent, plan.folder, plan.topic) == (LIST_DOCUMENTS, "Finance", None)
     plan = await plan_query("How many PDFs in the HR folder are about leave?", [], catalog, now=NOW)
     assert (plan.folder, plan.topic, plan.topic_mode, plan.file_types) == ("HR", "leave", "about", ["pdf"])
+
+
+async def test_selected_documents_limit_the_plan_to_them():
+    catalog = [
+        CatalogEntry("d1", "Strategy 2027.pptx", "pptx", "/Corpus", datetime(2026, 10, 24, 20, 30, tzinfo=UTC), "onedrive"),
+        CatalogEntry("d2", "Leave Policy 2026.pdf", "pdf", "/HR", datetime(2026, 9, 1, 9, tzinfo=UTC), "onedrive"),
+        CatalogEntry("d3", "Budget 2026.xlsx", "xlsx", "/Finance/2026", datetime(2026, 9, 1, 9, tzinfo=UTC), "onedrive"),
+    ]
+    leave, budget = catalog[1], catalog[2]
+    plan = await plan_query("Compare these documents", [], catalog, now=NOW, selected=[budget, leave])
+    assert (plan.intent, plan.document_scope, plan.target_document_ids) == (DOCUMENT_QUESTION, ["d3", "d2"], ["d3", "d2"])
+    # Only summary words about the selection: the whole document is read.
+    for query in ("Explain this", "What is it about?", "summarize these", "Give me the key points"):
+        assert (await plan_query(query, [], catalog, now=NOW, selected=[budget])).intent == SUMMARIZE, query
+    plan = await plan_query("Who approved it?", [], catalog, now=NOW, selected=[budget])
+    assert (plan.intent, plan.document_scope) == (DOCUMENT_QUESTION, ["d3"])
+    # The selection wins over a document the question names.
+    plan = await plan_query("What does the Leave Policy 2026 say about travel?", [], catalog, now=NOW, selected=[budget])
+    assert (plan.intent, plan.target_document_ids) == (DOCUMENT_QUESTION, ["d3"])
+    plan = await plan_query("Which of these mention Contoso?", [], catalog, now=NOW, selected=[budget, leave])
+    assert (plan.intent, plan.topic, plan.topic_mode, plan.document_scope) == (LIST_DOCUMENTS, "Contoso", "mentions",
+                                                                               ["d3", "d2"])
+    # Without a selection nothing changes.
+    plan = await plan_query("Compare these documents", [], catalog, now=NOW)
+    assert (plan.intent, plan.document_scope) == (DOCUMENT_QUESTION, [])
+    assert (await plan_query("Which of these mention Contoso?", [], catalog, now=NOW)).intent == DOCUMENT_QUESTION

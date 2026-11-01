@@ -16,14 +16,14 @@ from app.services import rag_service
 from app.services.answer_guard import AnswerGuard
 from app.services.connectors import DriveItem
 from app.services.indexing import index_file
-from app.services.retrieval_service import hybrid_search
+from app.services.retrieval_service import hybrid_search, load_catalog
 from tests.conftest import make_user
 from tests.fixtures.corpus import build_corpus
 
 pytestmark = pytest.mark.live
 CORPUS = [f for f in build_corpus() if f.should_index]
 NOT_FOUND = re.compile(r"couldn.?t find|could not find|not (found|mentioned|available|in (the|your))|no (relevant )?information|"
-                       r"don.?t (have|see)|(doesn.?t|do(es)? not) (contain|mention|specify|provide|include)|unable to find", re.I)
+                       r"don.?t (have|see)|(doesn.?t|do(es)? not) (contain|mention|specify|provide|include|cover)|unable to find", re.I)
 
 
 def _digits(text):
@@ -35,10 +35,10 @@ def _norm(text):
     return re.sub(r"\s+", " ", text).lower()
 
 
-async def _ask(user_id, question, history=None):
+async def _ask(user_id, question, history=None, selected=()):
     """The answer as the user sees it: streamed through the same guard as the chat API."""
     async with AsyncSessionLocal() as db:
-        prepared = await rag_service.prepare(db, user_id, question, history or [])
+        prepared = await rag_service.prepare(db, user_id, question, history or [], selected=selected)
     guard = AnswerGuard(c.get("url") for c in prepared.citations)
     async for token in rag_service.stream_answer(prepared):
         guard.feed(token)
@@ -114,6 +114,17 @@ async def test_live_every_document_answers_with_valid_citations():
     prepared, answer = await _ask(user.id, "Compare the Runbook and Strategy 2027: what does each one cover?")
     behaviour.append(("comparison uses both documents", {"Runbook.md", "Strategy 2027.pptx"}
                       <= {c.filename for c in prepared.chunks}, answer))
+    async with AsyncSessionLocal() as db:
+        by_name = {e.filename: e for e in await load_catalog(db, user.id)}
+    prepared, answer = await _ask(user.id, "When is the pilot launch?", selected=[by_name["Runbook.md"]])
+    behaviour.append(("a selected document without the answer: says so, other documents unused",
+                      {c.filename for c in prepared.chunks} <= {"Runbook.md"} and "14 March 2027" not in answer
+                      and bool(NOT_FOUND.search(answer)), answer))
+    prepared, answer = await _ask(user.id, "When is the pilot launch?", selected=[by_name["Strategy 2027.pptx"]])
+    behaviour.append(("a selected document answers", "14 March 2027" in answer, answer))
+    prepared, answer = await _ask(user.id, "Explain this", selected=[by_name["Employee Handbook.docx"]])
+    behaviour.append(("'explain this' summarizes the selected document", prepared.plan.intent == "summarize_document"
+                      and "18 weeks" in answer, answer))
     prepared, answer = await _ask(user.id, "Has the Strategy 2027 pilot launch already happened, or is it still ahead?")
     ahead = datetime.now(UTC).date() < datetime(2027, 3, 14, tzinfo=UTC).date()
     expected = r"\b(ahead|future|upcoming|not yet|will take place|has not)\b" if ahead else r"\b(already|took place|happened|past)\b"

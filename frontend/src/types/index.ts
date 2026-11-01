@@ -75,6 +75,14 @@ export interface Citation {
   url?: string | null;
 }
 
+/** A document the user selected for a question (by typing "/" in the chat input); it is answered from these only. */
+export interface SelectedDocument {
+  id: string;
+  filename: string;
+  file_type: string;
+  drive_type?: DriveType;
+}
+
 export interface ChatMessage {
   id: string;
   /** Stable render key for messages created in this tab (their id changes to the server id). */
@@ -82,6 +90,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   citations?: Citation[];
+  /** User messages: the documents the question was limited to. */
+  documents?: SelectedDocument[];
   feedback?: number | null;
   timestamp: string;
   persisted?: boolean;

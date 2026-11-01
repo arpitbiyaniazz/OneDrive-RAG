@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import {
   ArrowUp,
@@ -18,10 +18,19 @@ import {
   AlertCircle,
   X,
 } from 'lucide-react';
-import { ChatMessage, Citation } from '../../types';
-import { ApiError, SessionMessage, apiFetch, errorFrom, fetchSessionMessages, sendFeedback } from '../../services/api';
+import { ChatMessage, Citation, DocumentRecord, SelectedDocument } from '../../types';
+import {
+  ApiError,
+  SessionMessage,
+  apiFetch,
+  errorFrom,
+  fetchIndexedDocuments,
+  fetchSessionMessages,
+  sendFeedback,
+} from '../../services/api';
 import { MOBILE_QUERY, useMediaQuery } from '../../hooks';
 import { AnswerMarkdown } from './AnswerMarkdown';
+import { DocumentChip, DocumentPicker, PICKER_ID, PICKER_SHOWN, matchDocuments, optionId, slashCommand } from './DocumentPicker';
 
 interface ChatBoxProps {
   sessionId: string | null;
@@ -70,6 +79,10 @@ const STATUS_TEXT: Record<string, string> = {
 
 /** Same limit as the backend (MAX_QUERY_CHARS). */
 const MAX_QUERY_CHARS = 4000;
+/** Documents one question can be limited to; same limit as the backend (MAX_SELECTED_DOCUMENTS). */
+const MAX_SELECTED_DOCUMENTS = 10;
+/** The document list for "/" is fetched again when it is older than this (new files get indexed). */
+const LIBRARY_MAX_AGE_MS = 30_000;
 /** Auto-scroll only follows new text while the reader is this close to the bottom. */
 const NEAR_BOTTOM_PX = 120;
 /** On touch devices focusing the input would pop up the on-screen keyboard over the answer. */
@@ -96,6 +109,7 @@ const toChatMessage = (m: SessionMessage): ChatMessage => ({
   role: m.role,
   content: m.content,
   citations: m.citations ?? [],
+  documents: m.documents ?? [],
   feedback: m.feedback,
   timestamp: m.created_at ?? '',
   persisted: true,
@@ -200,6 +214,17 @@ const MessageRow = memo(function MessageRow({ message: msg, pendingStatus, copyR
               overflowWrap: 'anywhere',
             }}
           >
+            {msg.documents && msg.documents.length > 0 && (
+              <div
+                role="group"
+                aria-label="Answered from the selected documents"
+                style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', marginBottom: '0.5rem', whiteSpace: 'normal' }}
+              >
+                {msg.documents.map((doc) => (
+                  <DocumentChip key={doc.id} doc={doc} />
+                ))}
+              </div>
+            )}
             {msg.content}
           </div>
         </div>
@@ -363,6 +388,18 @@ export function ChatBox({
   const [loadState, setLoadState] = useState<LoadState>({ status: 'idle' });
   const [sendError, setSendError] = useState<SendError | null>(null);
   const [copyState, setCopyState] = useState<{ id: string; result: 'copied' | 'failed' } | null>(null);
+  /** Documents chosen with "/" for the next question: it is answered from these only. */
+  const [selectedDocs, setSelectedDocs] = useState<SelectedDocument[]>([]);
+  const [caret, setCaret] = useState(0);
+  const [inputFocused, setInputFocused] = useState(false);
+  const [library, setLibrary] = useState<{ state: 'idle' | 'loading' | 'error' | 'ready'; documents: DocumentRecord[] }>({
+    state: 'idle',
+    documents: [],
+  });
+  const [libraryAttempt, setLibraryAttempt] = useState(0);
+  const [pickerIndex, setPickerIndex] = useState(0);
+  /** Where the "/" was when the user closed the list with Escape: it stays closed for that "/". */
+  const [dismissedAt, setDismissedAt] = useState<number | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -374,7 +411,50 @@ export function ChatBox({
   /** Bumped on every load and every send, so a stale history load is ignored. */
   const loadEpochRef = useRef(0);
   const copyTimerRef = useRef<number | undefined>(undefined);
+  const libraryLoadedAtRef = useRef(0);
+  const libraryLoadingRef = useRef(false);
   const isStreaming = pending !== null;
+
+  // The document picker: open while a "/name" is typed before the caret.
+  const typedSlash = slashCommand(inputQuery, caret);
+  const slashStart = typedSlash?.start ?? -1;
+  const slashFilter = typedSlash?.filter ?? '';
+  const pickerFull = selectedDocs.length >= MAX_SELECTED_DOCUMENTS;
+  const selectedIds = useMemo(() => new Set(selectedDocs.map((d) => d.id)), [selectedDocs]);
+  const matches = useMemo(
+    () => (slashStart >= 0 && !pickerFull ? matchDocuments(library.documents, slashFilter, selectedIds) : []),
+    [slashStart, slashFilter, pickerFull, library.documents, selectedIds]
+  );
+  const pickerWanted = inputFocused && slashStart >= 0 && slashStart !== dismissedAt;
+  // Text that merely contains a "/" closes the list once a space follows and no document matches.
+  const pickerOpen = pickerWanted && (matches.length > 0 || !/\s/.test(slashFilter));
+  const shownMatches = matches.slice(0, PICKER_SHOWN);
+  const activeOption = Math.min(pickerIndex, Math.max(0, shownMatches.length - 1));
+
+  // The documents are fetched when the list opens, and again once they are LIBRARY_MAX_AGE_MS old.
+  useEffect(() => {
+    if (!pickerWanted || libraryLoadingRef.current || Date.now() - libraryLoadedAtRef.current < LIBRARY_MAX_AGE_MS) return;
+    libraryLoadingRef.current = true;
+    setLibrary((l) => (l.state === 'ready' ? l : { state: 'loading', documents: [] }));
+    fetchIndexedDocuments()
+      .then(
+        (documents) => {
+          libraryLoadedAtRef.current = Date.now();
+          setLibrary({ state: 'ready', documents });
+        },
+        () => setLibrary((l) => (l.state === 'ready' ? l : { state: 'error', documents: [] }))
+      )
+      .finally(() => {
+        libraryLoadingRef.current = false;
+      });
+  }, [pickerWanted, libraryAttempt]);
+
+  useEffect(() => setPickerIndex(0), [slashStart, slashFilter]);
+
+  // Escape closes the list for that "/" only: deleting it, or typing a "/" elsewhere, opens it again.
+  useEffect(() => {
+    if (dismissedAt !== null && slashStart !== dismissedAt) setDismissedAt(null);
+  }, [slashStart, dismissedAt]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -458,7 +538,9 @@ export function ChatBox({
   async function handleSend(queryText?: string) {
     const q = (queryText ?? inputQuery).trim().slice(0, MAX_QUERY_CHARS);
     if (!q || requestRef.current) return;
+    const documents = selectedDocs;
     if (queryText === undefined) setInputQuery('');
+    setSelectedDocs([]);
     setSendError(null);
     loadEpochRef.current++; // a history load finishing now must not replace this exchange
     setLoadState({ status: 'idle' });
@@ -473,7 +555,7 @@ export function ChatBox({
     stickToBottomRef.current = true;
     setMessages((prev) => [
       ...prev,
-      { id: userKey, clientId: userKey, role: 'user', content: q, timestamp: now },
+      { id: userKey, clientId: userKey, role: 'user', content: q, timestamp: now, ...(documents.length ? { documents } : {}) },
       { id: answerKey, clientId: answerKey, role: 'assistant', content: '', timestamp: now },
     ]);
     setPending({ key: answerKey, status: 'searching' });
@@ -490,8 +572,14 @@ export function ChatBox({
       const response = await apiFetch('/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // The time zone makes "today" and date questions use the user's local dates.
-        body: JSON.stringify({ query: q, session_id: activeSessionIdRef.current, timezone: browserTimeZone() }),
+        // The time zone makes "today" and date questions use the user's local dates; documents picked with "/"
+        // limit the answer to them.
+        body: JSON.stringify({
+          query: q,
+          session_id: activeSessionIdRef.current,
+          timezone: browserTimeZone(),
+          ...(documents.length ? { document_ids: documents.map((d) => d.id) } : {}),
+        }),
         signal: request.controller.signal,
       });
       if (!isCurrent()) return;
@@ -547,6 +635,8 @@ export function ChatBox({
         // The question never reached the assistant: take it back so it can be sent again.
         setMessages((prev) => prev.filter((m) => m.id !== userKey && m.id !== answerKey));
         setInputQuery((current) => (current.trim() ? current : q));
+        setSelectedDocs((current) => (current.length ? current : documents));
+        if (documents.length) libraryLoadedAtRef.current = 0; // a selected document may be gone: list them again
         setSendError(describeSendError(e));
       } else {
         patchAnswer((m) => ({ content: withNote(m.content, '(Connection lost.)'), isError: !m.content }));
@@ -581,9 +671,67 @@ export function ChatBox({
     copyTimerRef.current = window.setTimeout(() => setCopyState(null), 2000);
   }, []);
 
+  function trackCaret(el: HTMLTextAreaElement) {
+    setCaret(el.selectionStart ?? el.value.length);
+  }
+
+  /** Replaces the typed "/name" with the document, shown as a chip above the input. */
+  function pickDocument(doc: DocumentRecord) {
+    if (!typedSlash) return;
+    const before = inputQuery.slice(0, typedSlash.start);
+    let after = inputQuery.slice(caret);
+    if ((!before || /\s$/.test(before)) && after.startsWith(' ')) after = after.slice(1);
+    setInputQuery(before + after);
+    setCaret(before.length);
+    setSelectedDocs((prev) =>
+      prev.some((d) => d.id === doc.id) || prev.length >= MAX_SELECTED_DOCUMENTS
+        ? prev
+        : [...prev, { id: doc.id, filename: doc.filename, file_type: doc.file_type, drive_type: doc.drive_type }]
+    );
+    window.requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(before.length, before.length);
+    });
+  }
+
+  function removeDocument(id: string) {
+    setSelectedDocs((prev) => prev.filter((d) => d.id !== id));
+    refocusInput();
+  }
+
   function handleKeyDown(e: ReactKeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key !== 'Enter' || e.shiftKey) return;
-    if (e.nativeEvent.isComposing || e.keyCode === 229) return; // an IME is composing (e.g. Japanese, Chinese)
+    const composing = e.nativeEvent.isComposing || e.keyCode === 229; // an IME is composing (e.g. Japanese, Chinese)
+    if (pickerOpen && typedSlash && !composing) {
+      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && shownMatches.length) {
+        e.preventDefault();
+        const step = e.key === 'ArrowDown' ? 1 : -1;
+        setPickerIndex((activeOption + step + shownMatches.length) % shownMatches.length);
+        return;
+      }
+      if (((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') && shownMatches.length) {
+        e.preventDefault();
+        pickDocument(shownMatches[activeOption]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setDismissedAt(typedSlash.start);
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey && (library.state === 'idle' || library.state === 'loading')) {
+        e.preventDefault(); // the documents are still loading: do not send the "/name" as a question
+        return;
+      }
+    }
+    if (e.key === 'Backspace' && !inputQuery && selectedDocs.length && !composing) {
+      // As in a list of recipients, Backspace in the empty input removes the last document.
+      e.preventDefault();
+      setSelectedDocs((prev) => prev.slice(0, -1));
+      return;
+    }
+    if (e.key !== 'Enter' || e.shiftKey || composing) return;
     e.preventDefault();
     if (!isStreaming) handleSend();
   }
@@ -972,6 +1120,7 @@ export function ChatBox({
           ref={inputBarRef}
           className="chat-input"
           style={{
+            position: 'relative',
             width: '100%',
             maxWidth: '780px',
             background: 'var(--app-input-bg)',
@@ -982,16 +1131,51 @@ export function ChatBox({
             gap: '0.5rem',
           }}
         >
+          {pickerOpen && (
+            <DocumentPicker
+              matches={matches}
+              activeIndex={activeOption}
+              filter={slashFilter}
+              state={library.state}
+              total={library.documents.length}
+              full={pickerFull}
+              maxDocuments={MAX_SELECTED_DOCUMENTS}
+              onPick={pickDocument}
+              onHover={setPickerIndex}
+              onRetry={() => setLibraryAttempt((n) => n + 1)}
+            />
+          )}
+
+          {selectedDocs.length > 0 && (
+            <div role="group" aria-label="Selected documents" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+              {selectedDocs.map((doc) => (
+                <DocumentChip key={doc.id} doc={doc} onRemove={() => removeDocument(doc.id)} />
+              ))}
+            </div>
+          )}
+
           {/* Multiline auto-expanding textarea */}
           <textarea
             ref={textareaRef}
             rows={1}
             value={inputQuery}
             maxLength={MAX_QUERY_CHARS}
-            onChange={(e) => setInputQuery(e.target.value)}
+            onChange={(e) => {
+              setInputQuery(e.target.value);
+              trackCaret(e.target);
+            }}
+            onSelect={(e) => trackCaret(e.currentTarget)}
+            onFocus={() => setInputFocused(true)}
+            onBlur={() => setInputFocused(false)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask a question about your OneDrive or Google Drive documents..."
-            aria-label="Ask a question about your documents"
+            placeholder={
+              selectedDocs.length
+                ? 'Ask a question about the selected documents...'
+                : 'Ask a question about your documents, or type / to choose documents...'
+            }
+            aria-label="Ask a question about your documents. Type / to choose documents."
+            aria-controls={pickerOpen && shownMatches.length ? PICKER_ID : undefined}
+            aria-activedescendant={pickerOpen && shownMatches.length ? optionId(activeOption) : undefined}
             style={{
               width: '100%',
               background: 'transparent',

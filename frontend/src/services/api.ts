@@ -7,6 +7,7 @@ import {
   JobStatus,
   KnowledgeBaseStats,
   OneDriveItem,
+  SelectedDocument,
   TrackedFolder,
   UserProfile,
 } from '../types';
@@ -247,6 +248,11 @@ export async function fetchDocuments(filters: { file_type?: string; drive_type?:
   return apiJson<{ total: number; documents: DocumentRecord[] }>(`/documents${query}`);
 }
 
+/** Indexed documents, the ones a question can be limited to (most recently indexed first). */
+export async function fetchIndexedDocuments(): Promise<DocumentRecord[]> {
+  return (await apiJson<{ total: number; documents: DocumentRecord[] }>('/documents?status=indexed&limit=1000')).documents;
+}
+
 export const fetchKnowledgeBaseStats = () => apiJson<KnowledgeBaseStats>('/documents/stats');
 
 /** Removes a document from the knowledge base; it stays out of syncs until selected for indexing again. */
@@ -277,6 +283,7 @@ export interface SessionMessage {
   role: 'user' | 'assistant';
   content: string;
   citations: Citation[];
+  documents?: SelectedDocument[];
   feedback: number | null;
   created_at: string | null;
 }

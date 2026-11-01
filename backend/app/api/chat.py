@@ -3,7 +3,7 @@ import json
 import logging
 import uuid
 from datetime import timedelta
-from typing import List, Optional
+from typing import Annotated, List, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -21,6 +21,8 @@ from app.models.chat import ChatMessage, ChatQuestion, ChatSession
 from app.models.user import User
 from app.services import rag_service
 from app.services.answer_guard import AnswerGuard
+from app.services.query_engine import CatalogEntry
+from app.services.retrieval_service import load_catalog
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["Chat"])
@@ -31,6 +33,9 @@ class ChatStreamRequest(BaseModel):
     session_id: Optional[str] = Field(None, max_length=36)
     # The browser's IANA time zone (e.g. "Asia/Kolkata"): "today" and date filters use the user's dates.
     timezone: Optional[str] = Field(None, max_length=64)
+    # Documents the user selected for this question (typed "/" in the input): it is answered from them only.
+    document_ids: List[Annotated[str, Field(min_length=1, max_length=36)]] = Field(
+        default_factory=list, max_length=settings.MAX_SELECTED_DOCUMENTS)
 
     @field_validator("query")
     @classmethod
@@ -38,6 +43,11 @@ class ChatStreamRequest(BaseModel):
         if not value.strip():
             raise ValueError("Query cannot be empty.")
         return value.strip()
+
+    @field_validator("document_ids")
+    @classmethod
+    def _unique(cls, value: List[str]) -> List[str]:
+        return list(dict.fromkeys(value))
 
 
 class FeedbackRequest(BaseModel):
@@ -67,6 +77,23 @@ async def _owned_session(db: AsyncSession, session_id: str, user: User) -> ChatS
     return session
 
 
+async def _selected_documents(db: AsyncSession, user_id: str, document_ids: List[str]) -> List[CatalogEntry]:
+    """The selected documents that can be searched (the user's own, indexed), in the order they were picked."""
+    if not document_ids:
+        return []
+    found = {e.id: e for e in await load_catalog(db, user_id, len(document_ids), document_ids=document_ids)}
+    return [found[doc_id] for doc_id in document_ids if doc_id in found]
+
+
+def _history_turn(role: str, content: str, documents: Optional[List[dict]]) -> dict:
+    """A past message for the model; a question asked about selected documents names them, so a
+    follow-up ("and the totals?") is understood."""
+    names = "; ".join(d.get("filename", "") for d in documents or [] if isinstance(d, dict))
+    if role == "user" and names:
+        content = f"[About the selected documents: {names}]\n{content}"
+    return {"role": role, "content": content}
+
+
 async def _enforce_rate_limit(db: AsyncSession, user_id: str) -> None:
     """Per-user question limits (CHAT_RATE_LIMIT_PER_MINUTE / _PER_DAY) protect the LLM budget."""
     per_minute, per_day = settings.CHAT_RATE_LIMIT_PER_MINUTE, settings.CHAT_RATE_LIMIT_PER_DAY
@@ -92,6 +119,10 @@ async def stream_chat(req: ChatStreamRequest, db: AsyncSession = Depends(get_db)
     """Server-Sent Events: {"status"} -> {"token"}* -> {"done", citations, message_id} or {"error"}.
     A {"replace"} event, when present, replaces the text shown so far (an answer withheld by the guard)."""
     await _enforce_rate_limit(db, user.id)
+    selected = await _selected_documents(db, user.id, req.document_ids)
+    if req.document_ids and not selected:
+        raise HTTPException(status_code=400, detail="The selected documents are no longer in your knowledge base. "
+                                                    "Remove them and select documents again.")
     session = await _owned_session(db, req.session_id, user) if req.session_id else None
     history: List[dict] = []
     if session is None:
@@ -101,15 +132,17 @@ async def stream_chat(req: ChatStreamRequest, db: AsyncSession = Depends(get_db)
         await db.flush()
     else:
         rows = (await db.execute(
-            select(ChatMessage.role, ChatMessage.content)
+            select(ChatMessage.role, ChatMessage.content, ChatMessage.documents)
             .where(ChatMessage.session_id == session.id)
             .order_by(ChatMessage.created_at.desc())
             .limit(settings.CHAT_HISTORY_TURNS * 2)
         )).all()
-        history = [{"role": r.role, "content": r.content} for r in reversed(rows)]
+        history = [_history_turn(r.role, r.content, r.documents) for r in reversed(rows)]
         if history and history[0]["role"] == "assistant":
             history = history[1:]  # start the window on a user turn
-    db.add(ChatMessage(session_id=session.id, user_id=user.id, role="user", content=req.query))
+    documents = [{"id": e.id, "filename": e.filename, "file_type": e.file_type, "drive_type": e.drive_type}
+                 for e in selected]
+    db.add(ChatMessage(session_id=session.id, user_id=user.id, role="user", content=req.query, documents=documents or None))
     db.add(ChatQuestion(user_id=user.id))
     # Only the last day counts toward the limits; older entries are dropped as the user asks.
     await db.execute(delete(ChatQuestion).where(ChatQuestion.user_id == user.id,
@@ -130,10 +163,10 @@ async def stream_chat(req: ChatStreamRequest, db: AsyncSession = Depends(get_db)
             yield _sse({"status": "searching", "session_id": session_id})
             with rag_trace("rag_chat", input={"question": question},
                            metadata={**rag_service.PROMPT_METADATA, "session_id": session_id,
-                                     "otel_trace_id": otel_trace_id}) as trace:
+                                     "otel_trace_id": otel_trace_id, "selected_documents": len(selected)}) as trace:
                 trace_id = trace.trace_id
                 async with AsyncSessionLocal() as work_db:
-                    prepared = await rag_service.prepare(work_db, user_id, question, history, tz=zone)
+                    prepared = await rag_service.prepare(work_db, user_id, question, history, tz=zone, selected=selected)
                 citations = prepared.citations
                 # A long document is first read part by part ("reading"), then the answer is written.
                 status = {"status": "reading", "parts": len(prepared.parts)} if prepared.parts else {"status": "generating"}
@@ -228,7 +261,8 @@ async def session_messages(session_id: str, db: AsyncSession = Depends(get_db), 
         "title": session.title,
         "messages": [
             {"id": m.id, "role": m.role, "content": m.content, "citations": m.citations or [],
-             "feedback": m.feedback, "created_at": m.created_at.isoformat() if m.created_at else None}
+             "documents": m.documents or [], "feedback": m.feedback,
+             "created_at": m.created_at.isoformat() if m.created_at else None}
             for m in rows
         ],
     }

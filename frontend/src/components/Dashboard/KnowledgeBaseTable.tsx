@@ -1,9 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import {
-  FileText,
-  FileSpreadsheet,
-  Presentation,
   ExternalLink,
   Search,
   Filter,
@@ -26,6 +23,7 @@ import {
   startSync,
   untrackFolder,
 } from '../../services/api';
+import { FileTypeIcon } from '../FileTypeIcon';
 
 interface Notice {
   kind: 'success' | 'error' | 'info';
@@ -324,27 +322,6 @@ export function KnowledgeBaseTable({ refreshToken = 0 }: { refreshToken?: number
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   }
 
-  function renderFileIcon(type: string) {
-    switch (type.toLowerCase()) {
-      case 'pdf':
-        return <FileText size={16} color="#f43f5e" />;
-      case 'docx':
-      case 'doc':
-      case 'gdoc':
-        return <FileText size={16} color="#3b82f6" />;
-      case 'xlsx':
-      case 'xls':
-      case 'gsheet':
-        return <FileSpreadsheet size={16} color="#10b981" />;
-      case 'pptx':
-      case 'ppt':
-      case 'gslides':
-        return <Presentation size={16} color="#f59e0b" />;
-      default:
-        return <FileText size={16} color="#a855f7" />;
-    }
-  }
-
   // File-type filter options come from the documents actually loaded.
   const fileTypes = useMemo(
     () => Array.from(new Set(documents.map((d) => (d.file_type || '').toLowerCase()).filter(Boolean))).sort(),
@@ -629,7 +606,7 @@ export function KnowledgeBaseTable({ refreshToken = 0 }: { refreshToken?: number
                       onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
                     >
                       <td style={{ padding: '0.85rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600 }}>
-                        {renderFileIcon(doc.file_type || '')}
+                        <FileTypeIcon type={doc.file_type || ''} />
                         <span>{doc.filename}</span>
                       </td>
                       <td style={{ padding: '0.85rem 1rem' }}>

@@ -33,6 +33,8 @@ class ChatMessage(Base):
     role = Column(String(50), nullable=False)  # user | assistant
     content = Column(Text, nullable=False)
     citations = Column(JSON, nullable=True)
+    # User messages: the documents the user selected for the question ([{id, filename, file_type, drive_type}]).
+    documents = Column(JSON, nullable=True)
     langfuse_trace_id = Column(String(100), nullable=True, index=True)
     feedback = Column(Integer, nullable=True)  # 1 positive, -1 negative
     created_at = Column(DateTime(timezone=True), default=utcnow)
