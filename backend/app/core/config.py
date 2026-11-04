@@ -135,6 +135,24 @@ class Settings(BaseSettings):
         origins.add(self.FRONTEND_URL)
         return sorted(origins)
 
+    # Who may sign in: comma-separated email addresses and/or "@domain" entries ("me@gmail.com,@example.com").
+    # Empty lets in every account Google lets through: only the test users while the OAuth app is in Testing,
+    # but any Google account once it is published.
+    ALLOWED_EMAILS: str = ""
+
+    @property
+    def allowed_emails(self) -> frozenset:
+        return frozenset(e.strip().lower() for e in self.ALLOWED_EMAILS.split(",") if e.strip())
+
+    def email_allowed(self, email: Optional[str], verified: bool = True) -> bool:
+        """True when ALLOWED_EMAILS is empty, or the (verified) address or its @domain is listed."""
+        if not self.allowed_emails:
+            return True
+        if not email or not verified:
+            return False
+        email = email.strip().lower()
+        return email in self.allowed_emails or "@" + email.rsplit("@", 1)[-1] in self.allowed_emails
+
     @property
     def sandbox_mode(self) -> bool:
         return self.DEV_MOCK_ONEDRIVE or self.DEV_MOCK_GDRIVE

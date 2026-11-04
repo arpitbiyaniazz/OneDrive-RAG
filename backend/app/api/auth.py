@@ -42,6 +42,8 @@ async def _user_from_token(credentials: Optional[HTTPAuthorizationCredentials], 
     user = await db.get(User, payload["sub"])
     if user is None or not user.is_active or payload.get("ver", 0) != user.token_version:
         return None
+    if not settings.email_allowed(user.email):  # removed from ALLOWED_EMAILS after signing in
+        return None
     return user
 
 
@@ -159,6 +161,10 @@ async def _callback(provider_name: str, body: OAuthCallback, db: AsyncSession) -
         profile = await provider.profile(tokens["access_token"])
     except ConnectorError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    if not settings.email_allowed(profile.email, profile.email_verified):
+        logger.warning("Sign-in refused: the %s account is not in ALLOWED_EMAILS", provider_name)
+        raise HTTPException(status_code=403, detail="This Google account is not allowed to use this app. "
+                                                    "Ask the owner to add it.")
 
     user = await _resolve_user(db, provider_name, profile, link_user_id)
     account = (await db.execute(

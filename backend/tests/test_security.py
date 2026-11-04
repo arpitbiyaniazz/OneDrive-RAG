@@ -273,3 +273,26 @@ def test_documents_cannot_escape_the_source_block():
     assert block.count("</source>") == 1 and block.count("</sources>") == 1
     assert "<question>" not in block
     assert 'title="evil&quot; title=&quot;x.pdf"' in block
+
+
+async def test_allowed_emails_limit_who_signs_in_and_end_existing_sessions(client, monkeypatch):
+    """A published Google app admits any Google account: ALLOWED_EMAILS is the app's own allowlist."""
+    from app.core.config import settings
+    from app.services.oauth import OAuthProfile
+
+    _fake_provider(monkeypatch, "google", OAuthProfile("sub-1", "ana@gmail.com", "Ana", True))
+    ana = await _sign_in(client, "google")
+    headers = {"Authorization": f"Bearer {ana.json()['token']}"}
+    assert (await client.get("/api/auth/me", headers=headers)).status_code == 200
+
+    monkeypatch.setattr(settings, "ALLOWED_EMAILS", " boss@example.com, @Team.Example ")
+    assert (await client.get("/api/auth/me", headers=headers)).status_code == 401  # removed: session ends
+    assert (await _sign_in(client, "google")).status_code == 403
+    _fake_provider(monkeypatch, "google", OAuthProfile("sub-2", "boss@example.com", "Boss", False))
+    assert (await _sign_in(client, "google")).status_code == 403  # listed, but the address is not verified
+    _fake_provider(monkeypatch, "google", OAuthProfile("sub-3", "boss@example.com", "Boss", True))
+    assert (await _sign_in(client, "google")).status_code == 200
+    _fake_provider(monkeypatch, "google", OAuthProfile("sub-4", "lee@team.example", "Lee", True))
+    assert (await _sign_in(client, "google")).status_code == 200  # a listed @domain
+    _fake_provider(monkeypatch, "google", OAuthProfile("sub-5", "lee@team.example.evil.com", "Eve", True))
+    assert (await _sign_in(client, "google")).status_code == 403

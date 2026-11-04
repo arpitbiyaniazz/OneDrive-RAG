@@ -103,6 +103,10 @@ def check_configuration() -> List[Check]:
         checks.append(Check("sandbox drives", settings.ENVIRONMENT != "production", "on (development only)", required=False))
     if settings.ENVIRONMENT == "production" and "localhost" in settings.FRONTEND_URL:
         checks.append(Check("FRONTEND_URL", False, f"{settings.FRONTEND_URL} looks like a development URL", required=False))
+    if settings.ENVIRONMENT == "production":
+        checks.append(Check("ALLOWED_EMAILS", bool(settings.allowed_emails),
+                            f"{len(settings.allowed_emails)} entries" if settings.allowed_emails else
+                            "empty: once the Google app is published, any Google account can sign in", required=False))
     return checks
 
 
