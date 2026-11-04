@@ -16,8 +16,11 @@ DOCX, XLSX and PPTX before indexing (PDF when an export exceeds Google's 10 MB l
    - `openid`, `.../auth/userinfo.email`, `.../auth/userinfo.profile`
    - `https://www.googleapis.com/auth/drive.readonly`
 3. While the app is in **Testing** status only listed **test users** can sign in, and Google expires their
-   refresh tokens after **7 days**. Users then see "reconnect your drive". Publish the app (verification is
-   required for `drive.readonly`, a restricted scope) to remove both limits.
+   refresh tokens after **7 days**. Users then see "reconnect your drive". Publishing the app (status
+   *In production*) removes the 7-day expiry. Until Google verifies it (`drive.readonly` is a restricted scope),
+   users see an "unverified app" screen and at most 100 new users can ever sign in; verification is needed for a
+   public launch. A published app lets any Google account start the sign-in, so set `ALLOWED_EMAILS` to the
+   accounts or `@domains` that may use it. See [DEPLOY.md](../DEPLOY.md).
 
 ## 3. OAuth client
 

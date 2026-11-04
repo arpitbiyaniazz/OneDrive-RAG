@@ -71,6 +71,9 @@ The backend image runs `alembic upgrade head` on start (`RUN_MIGRATIONS=false` t
 `WEB_CONCURRENCY` uvicorn workers; nginx serves the built UI and proxies `/api` with streaming enabled.
 Set `ENVIRONMENT=production`: the server then refuses default secrets, sandbox drives and mock providers.
 
+To put it on the internet for free (an Oracle Cloud server with automatic HTTPS, or Render + Neon), follow
+[DEPLOY.md](DEPLOY.md).
+
 ## Tests
 
 ```bash
