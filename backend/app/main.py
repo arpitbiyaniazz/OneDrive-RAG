@@ -137,7 +137,11 @@ async def request_context(request: Request, call_next):
 @app.exception_handler(Exception)
 async def unhandled(request: Request, exc: Exception):
     logger.exception("Unhandled error on %s %s", request.method, request.url.path)
-    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+    # This response is built outside CORSMiddleware: without these headers a UI on another origin
+    # (VITE_API_BASE_URL) sees only a network failure instead of the error.
+    origin = request.headers.get("origin")
+    headers = {"Access-Control-Allow-Origin": origin, "Vary": "Origin"} if origin in settings.cors_origins else None
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"}, headers=headers)
 
 
 for router in (health_router, auth_router, drives_router, ingestion_router, chat_router):

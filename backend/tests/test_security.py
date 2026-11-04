@@ -296,3 +296,25 @@ async def test_allowed_emails_limit_who_signs_in_and_end_existing_sessions(clien
     assert (await _sign_in(client, "google")).status_code == 200  # a listed @domain
     _fake_provider(monkeypatch, "google", OAuthProfile("sub-5", "lee@team.example.evil.com", "Eve", True))
     assert (await _sign_in(client, "google")).status_code == 403
+
+
+async def test_an_unexpected_error_still_reaches_a_ui_on_another_origin():
+    """Unhandled errors are answered outside CORSMiddleware; a cross-origin UI must still be able to read them."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.core.config import settings
+    from app.main import app
+
+    async def broken():
+        raise RuntimeError("boom")
+
+    app.add_api_route("/api/test-broken", broken)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test") as c:
+            origin = settings.cors_origins[0]
+            res = await c.get("/api/test-broken", headers={"Origin": origin})
+            assert res.status_code == 500 and res.headers["access-control-allow-origin"] == origin
+            other = await c.get("/api/test-broken", headers={"Origin": "https://evil.example"})
+            assert other.status_code == 500 and "access-control-allow-origin" not in other.headers
+    finally:
+        app.router.routes[:] = [r for r in app.router.routes if getattr(r, "path", "") != "/api/test-broken"]
