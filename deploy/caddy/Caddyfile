@@ -1,0 +1,27 @@
+# HTTPS in front of the web UI container. Caddy gets and renews a Let's Encrypt certificate for $DOMAIN
+# by itself; ports 80 and 443 must be reachable from the internet and DOMAIN must point at this server.
+{$DOMAIN} {
+	# Compress pages and assets, but never the streamed answers (text/event-stream), which must arrive
+	# token by token.
+	encode {
+		gzip
+		zstd
+		match {
+			header Content-Type text/html*
+			header Content-Type text/css*
+			header Content-Type text/plain*
+			header Content-Type application/javascript*
+			header Content-Type application/json*
+			header Content-Type image/svg+xml*
+		}
+	}
+
+	# Browsers keep using HTTPS for this site once they have seen it over HTTPS.
+	header Strict-Transport-Security "max-age=31536000"
+
+	# nginx in the frontend container serves the app and proxies /api/ to the backend.
+	reverse_proxy frontend:8080 {
+		# Pass every chunk of a streamed answer on at once.
+		flush_interval -1
+	}
+}

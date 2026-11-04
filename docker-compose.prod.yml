@@ -1,0 +1,77 @@
+# Production stack for one server (for example an Oracle Cloud Always Free VM, see DEPLOY.md option A):
+# Postgres (pgvector), the API with its background worker, the web UI, and Caddy in front with automatic HTTPS.
+#   ./deploy/server-setup.sh yourname.duckdns.org you@gmail.com   # creates .env (or copy and fill in
+#                                                                  # deploy/.env.production.example)
+#   docker compose -f docker-compose.prod.yml up -d --build
+# Only Caddy is reachable from outside (ports 80 and 443). The database and the app containers have no
+# published ports. The project name keeps these volumes apart from the development stack's.
+name: rag-prod
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-rag}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rag} -d ${POSTGRES_DB:-rag}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging: *logging
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # The password is part of a URL: use letters and digits only (openssl rand -hex 24).
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-rag}
+      # Requests arrive through Caddy and nginx on the internal network.
+      FORWARDED_ALLOW_IPS: "*"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *logging
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+        # nginx looks up the backend's address once at start: restart it whenever the backend is recreated.
+        restart: true
+    logging: *logging
+
+  caddy:
+    image: caddy:2-alpine           # maintained Caddy 2 line; `docker compose pull` picks up security fixes
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env (for example yourname.duckdns.org)}
+    volumes:
+      # A folder, not the single file: after `git pull` a restarted Caddy sees the new Caddyfile.
+      - ./deploy/caddy:/etc/caddy:ro
+      - caddy_data:/data        # certificates: keep this volume, or Let's Encrypt rate limits can bite
+      - caddy_config:/config
+    depends_on:
+      - frontend
+    logging: *logging
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

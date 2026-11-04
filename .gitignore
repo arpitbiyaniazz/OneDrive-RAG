@@ -4,6 +4,11 @@
 *.pem
 *.key
 
+# Database backups (DEPLOY.md)
+*.dump
+*.dump.tmp
+backups/
+
 # Python
 __pycache__/
 *.py[cod]
